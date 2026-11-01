@@ -56,6 +56,10 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .bad{color:var(--bad)}
 .warnc{color:var(--warn)}
 .sub{font-size:12px;color:var(--tx2)}
+.tag{font-size:11px;padding:2px 8px;border-radius:99px;background:var(--sf2);color:var(--tx2);white-space:nowrap}
+.aud{padding:10px 0;border-bottom:.5px solid var(--bd)}
+.aud .t{display:flex;justify-content:space-between;gap:8px;font-weight:600}
+.aud .d{font-size:13px;color:var(--tx2);margin-top:3px}
 </style>
 </head>
 <body>
@@ -69,6 +73,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 /* ---------- Conexión (claves públicas; la seguridad la dan los roles de la base de datos) ---------- */
 var SUPABASE_URL = 'https://gkhomooeuogtwhasdyuo.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_6vB64x8E8iTsOIKfXsmzOg_yh2Gg0sU';
+var VERSION = '2';
 
 var app = document.getElementById('app');
 if (!window.supabase) {
@@ -86,6 +91,11 @@ function money(n){ return '$' + (Math.round((+n || 0) * 100) / 100).toFixed(2); 
 function num(s){ return parseFloat(String(s == null ? '' : s).replace(',', '.')); }
 function fdate(s){ if(!s) return ''; var p = String(s).slice(0,10).split('-'); return (+p[2]) + ' ' + MS[+p[1]-1]; }
 function hoy(){ return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Caracas'}).format(new Date()); }
+function addDays(s, n){ var p = s.split('-'); return new Date(Date.UTC(+p[0], +p[1]-1, +p[2] + n)).toISOString().slice(0,10); }
+function dtime(ts){
+  try { return new Date(ts).toLocaleString('es-VE', {timeZone:'America/Caracas', day:'numeric', month:'short', hour:'numeric', minute:'2-digit'}); }
+  catch (e) { return String(ts); }
+}
 function errTxt(e){
   var m = (e && e.message) || String(e || '');
   if (/Failed to fetch|NetworkError|Load failed|network/i.test(m)) return 'Sin conexión. Revisa tu internet e inténtalo de nuevo.';
@@ -107,13 +117,26 @@ function ic(n, s){ s = s || 20; return '<svg width="'+s+'" height="'+s+'" viewBo
 function setMsg(m){ S.msg = m; S.err = ''; }
 function setErr(m){ S.err = m; S.msg = ''; }
 
+/* Formas de pago del mostrador: [columna en la base de datos, etiqueta] */
+var FP = [['efectivo','Efectivo'], ['punto_venta_1','Punto de venta 1'], ['punto_venta_2','Punto de venta 2'], ['pago_movil','Pago móvil']];
+
 /* ---------- Estado ---------- */
 var S = {
   boot:true, user:null, rol:null, nombre:'', em:'', tab:'venta', busy:false, msg:'', err:'',
-  clientes:[], productos:[],
+  clientes:[], productos:[], perfiles:[], perfMap:{},
+  vm:'cli',
   v:{cli:'', prod:'', kilos:'1', lineas:[], forma:'contado'},
-  ini:null, saldos:null, hist:null, mas:'menu', ce:null, pe:null
+  mo:{fecha:'', v:{efectivo:'', punto_venta_1:'', punto_venta_2:'', pago_movil:''}, existe:null, lista:[], cargando:false},
+  ini:null, saldos:null, hist:null, mas:'menu', ce:null, pe:null, pf:null,
+  aud:{filtro:'', lista:null}
 };
+
+function nameOf(id){
+  if (!id) return 'Sistema';
+  var p = S.perfMap[id];
+  if (p) return p.nombre || p.correo || 'Usuario';
+  return (S.user && id === S.user.id) ? S.nombre : 'Usuario';
+}
 
 /* ---------- Vistas ---------- */
 function banner(){ return (S.msg ? '<div class="msg">'+esc(S.msg)+'</div>' : '') + (S.err ? '<div class="err">'+esc(S.err)+'</div>' : ''); }
@@ -129,10 +152,9 @@ function vLogin(){
 }
 
 function vHead(){
-  var t = {inicio:'Inicio', venta:'Nueva venta', cobrar:'Cuentas por cobrar', mas:'Más'}[S.tab];
+  var t = {inicio:'Inicio', venta:(S.vm === 'mos' ? 'Total de mostrador' : 'Venta a cliente'), cobrar:'Cuentas por cobrar', mas:'Más'}[S.tab];
   if (S.tab === 'cobrar' && S.hist) t = S.hist.nombre;
-  if (S.tab === 'mas' && S.mas === 'clientes') t = 'Clientes';
-  if (S.tab === 'mas' && S.mas === 'productos') t = 'Productos';
+  if (S.tab === 'mas') t = {menu:'Más', clientes:'Clientes', productos:'Productos', usuarios:'Usuarios', auditoria:'Registro de cambios'}[S.mas] || 'Más';
   return '<header><div><b>'+esc(t)+'</b><div class="lbl">'+esc(S.nombre)+' · '+(S.rol === 'admin' ? 'Administrador' : 'Empleado')+'</div></div>' +
     '<button class="ib" onclick="A.salir()" aria-label="Cerrar sesión">'+ic('out')+'</button></header>';
 }
@@ -147,30 +169,39 @@ function vNav(){
 
 function vInicio(){
   if (!S.ini) return banner() + '<div class="lbl">Cargando…</div>';
-  var i = S.ini;
-  var h = '<div class="g"><div class="m"><div class="lbl">Ventas a clientes hoy</div><div class="big">'+money(i.vh)+'</div></div>' +
-    '<div class="m"><div class="lbl">Por cobrar</div><div class="big warnc">'+money(i.pc)+'</div></div></div>' +
+  var i = S.ini, h = banner();
+  if (!i.hayMos) h += '<div class="wn" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>Falta el total de mostrador de hoy</span><button onclick="A.irMostrador()">Registrar</button></div>';
+  h += '<div class="g"><div class="m"><div class="lbl">Ventas hoy</div><div class="big">'+money(i.vh)+'</div></div>' +
+    '<div class="m"><div class="lbl">Cobrado hoy</div><div class="big">'+money(i.ch)+'</div></div>' +
+    '<div class="m"><div class="lbl">Por cobrar</div><div class="big warnc">'+money(i.pc)+'</div></div>' +
+    '<div class="m"><div class="lbl">Mostrador hoy</div><div class="big">'+money(i.mos)+'</div></div></div>' +
     '<div class="h">Últimas ventas a clientes</div>';
   if (!i.ult.length) h += '<div class="lbl" style="padding:12px 0">Todavía no hay ventas registradas.</div>';
   h += i.ult.map(function(v){
-    return '<div class="row"><span>'+esc(v.clientes ? v.clientes.nombre : '')+'<div class="sub">'+(v.forma === 'contado' ? 'Contado' : 'A crédito')+' · '+fdate(v.fecha)+'</div></span><span>'+money(v.total)+'</span></div>';
+    return '<div class="row"><span>'+esc(v.clientes ? v.clientes.nombre : '')+'<div class="sub">'+(v.forma === 'contado' ? 'Contado' : 'A crédito')+' · '+fdate(v.fecha)+' · Registrado por '+esc(nameOf(v.creado_por))+'</div></span><span>'+money(v.total)+'</span></div>';
   }).join('');
-  return banner() + h;
+  return h;
 }
 
 function lineasTotal(){ var s = 0; S.v.lineas.forEach(function(l){ s += l.kilos * l.precio; }); return Math.round(s * 100) / 100; }
 
 function vVenta(){
+  var h = banner();
+  h += '<div class="seg" style="margin-top:0"><button class="'+(S.vm === 'cli' ? 'on' : '')+'" onclick="A.setVm(\'cli\')">Cliente</button>' +
+    '<button class="'+(S.vm === 'mos' ? 'on' : '')+'" onclick="A.setVm(\'mos\')">Total mostrador</button></div>';
+  return h + (S.vm === 'mos' ? vMostrador() : vVentaCli());
+}
+
+function vVentaCli(){
   var cl = S.clientes.filter(function(c){ return c.activo; });
   var pr = S.productos.filter(function(p){ return p.activo; });
   var v = S.v;
   if (!cl.length || !pr.length) {
     var falta = (!cl.length ? 'clientes' : '') + (!cl.length && !pr.length ? ' y ' : '') + (!pr.length ? 'productos' : '');
-    return banner() + '<div class="wn">Antes de vender hace falta crear ' + falta + '.' +
+    return '<div class="wn">Antes de vender hace falta crear ' + falta + '.' +
       (S.rol === 'admin' ? ' Hazlo en <b>Más</b>.' : ' Pídeselo al administrador.') + '</div>';
   }
-  var h = banner();
-  h += '<div class="f"><div class="lbl">Cliente</div><select onchange="A.setCli(this.value)"><option value="">Elige un cliente</option>' +
+  var h = '<div class="f"><div class="lbl">Cliente</div><select onchange="A.setCli(this.value)"><option value="">Elige un cliente</option>' +
     cl.map(function(c){ return '<option value="'+c.id+'"'+(v.cli === c.id ? ' selected' : '')+'>'+esc(c.nombre)+'</option>'; }).join('') + '</select></div>';
   var pid = v.prod || pr[0].id;
   h += '<div class="lbl">Producto y kilos</div><div style="display:flex;gap:8px;margin-bottom:6px">' +
@@ -186,6 +217,38 @@ function vVenta(){
     '<button class="'+(v.forma === 'credito' ? 'on' : '')+'" onclick="A.forma(\'credito\')">A crédito</button></div>';
   h += '<div class="row" style="font-weight:600;border:none"><span>Total</span><span>'+money(lineasTotal())+'</span></div>';
   h += '<button class="pri" style="width:100%;margin-top:6px"'+(S.busy ? ' disabled' : '')+' onclick="A.reg()">'+(S.busy ? 'Guardando…' : 'Registrar venta')+'</button>';
+  return h;
+}
+
+function totM(){
+  var s = 0;
+  FP.forEach(function(p){ var x = num(S.mo.v[p[0]]); if (x > 0) s += x; });
+  return Math.round(s * 100) / 100;
+}
+
+function vMostrador(){
+  var m = S.mo, adm = S.rol === 'admin', h = '';
+  if (m.cargando && !m.fecha) return '<div class="lbl">Cargando…</div>';
+  h += adm
+    ? '<div class="f"><div class="lbl">Fecha</div><input type="date" max="'+hoy()+'" value="'+esc(m.fecha)+'" onchange="A.pickD(this.value)"></div>'
+    : '<div class="lbl" style="margin-bottom:6px">Hoy · '+fdate(m.fecha)+'</div>';
+  h += FP.map(function(p){
+    return '<div class="row"><span>'+p[1]+'</span><input type="text" inputmode="decimal" placeholder="0.00" value="'+esc(m.v[p[0]])+'" oninput="A.upM(\''+p[0]+'\',this.value)" aria-label="'+p[1]+'" style="width:120px"></div>';
+  }).join('');
+  h += '<div class="row" style="font-weight:600"><span>Total del día</span><span id="mt">'+money(totM())+'</span></div>';
+  if (m.existe) h += '<div class="sub" style="margin:6px 0">Ya hay '+money(m.existe.total)+' registrado para este día'+(adm ? ' por '+esc(nameOf(m.existe.creado_por)) : '')+'. Se reemplazará al guardar.</div>';
+  h += '<button class="pri" style="width:100%;margin-top:8px"'+(S.busy ? ' disabled' : '')+' onclick="A.saveM()">'+(S.busy ? 'Guardando…' : (m.existe ? 'Actualizar total del día' : 'Guardar total del día'))+'</button>';
+  if (adm) {
+    h += '<div class="h">Últimos 7 días</div>';
+    for (var i = 0; i < 7; i++) {
+      var d = addDays(hoy(), -i);
+      var e = m.lista.filter(function(x){ return x.fecha === d; })[0];
+      h += '<div class="row tap" onclick="A.pickD(\''+d+'\')" style="'+(m.fecha === d ? 'font-weight:600' : '')+'"><span>'+(i === 0 ? 'Hoy · ' : '')+fdate(d)+
+        (e ? '<div class="sub">Registrado por '+esc(nameOf(e.creado_por))+'</div>' : '')+'</span>'+
+        (e ? '<span>'+money(e.total)+'</span>' : '<span class="warnc">Falta registrar</span>')+'</div>';
+    }
+    h += '<div class="lbl" style="margin-top:6px">Toca un día para registrarlo o corregirlo.</div>';
+  }
   return h;
 }
 
@@ -216,7 +279,7 @@ function vHist(){
   if (!H.movs.length) h += '<div class="lbl" style="padding:12px 0">Sin movimientos.</div>';
   h += H.movs.map(function(x){
     var lab = x.t === 'a' ? 'Abono' : (x.forma === 'contado' ? 'Compra de contado' : 'Compra a crédito');
-    return '<div class="row"><span>'+lab+'<div class="sub">'+fdate(x.fecha)+'</div></span><span class="'+(x.t === 'a' ? 'ok' : '')+'">'+(x.t === 'a' ? '+' : '')+money(x.m)+'</span></div>';
+    return '<div class="row"><span>'+lab+'<div class="sub">'+fdate(x.fecha)+' · Registrado por '+esc(nameOf(x.by))+'</div></span><span class="'+(x.t === 'a' ? 'ok' : '')+'">'+(x.t === 'a' ? '+' : '')+money(x.m)+'</span></div>';
   }).join('');
   return h;
 }
@@ -224,12 +287,14 @@ function vHist(){
 function vMas(){
   var h = banner();
   if (S.mas === 'menu') {
-    return h + '<div class="row" style="cursor:pointer" onclick="A.mas(\'clientes\')"><span>Clientes</span>'+ic('next')+'</div>' +
-      '<div class="row" style="cursor:pointer" onclick="A.mas(\'productos\')"><span>Productos y precios</span>'+ic('next')+'</div>';
+    var it = [['clientes','Clientes'], ['productos','Productos y precios'], ['usuarios','Usuarios'], ['auditoria','Registro de cambios']];
+    return h + it.map(function(x){
+      return '<div class="row tap" onclick="A.mas(\''+x[0]+'\')"><span>'+x[1]+'</span>'+ic('next')+'</div>';
+    }).join('') + '<div class="lbl" style="margin-top:16px">Versión '+VERSION+'</div>';
   }
   var back = '<button onclick="A.mas(\'menu\')" style="margin-bottom:10px;display:inline-flex;align-items:center;gap:4px">'+ic('back',18)+' Volver</button>';
-  if (S.mas === 'clientes') return back + h + vClientes();
-  return back + h + vProductos();
+  var body = {clientes:vClientes, productos:vProductos, usuarios:vUsuarios, auditoria:vAuditoria}[S.mas]();
+  return back + h + body;
 }
 
 function vClientes(){
@@ -266,6 +331,76 @@ function vProductos(){
   return h;
 }
 
+function vUsuarios(){
+  var u = S.pf, h = '';
+  if (u) {
+    var yo = u.id === S.user.id;
+    h += '<div class="m" style="margin-bottom:12px"><div class="lbl" style="margin-bottom:8px">'+esc(u.correo || '')+'</div>' +
+      '<div class="f"><div class="lbl">Nombre</div><input type="text" value="'+esc(u.nombre)+'" oninput="A.pf(\'nombre\',this.value)"></div>' +
+      '<div class="f"><div class="lbl">Rol</div><select onchange="A.pf(\'rol\',this.value)"'+(yo ? ' disabled' : '')+'><option value="empleado"'+(u.rol === 'empleado' ? ' selected' : '')+'>Empleado</option><option value="admin"'+(u.rol === 'admin' ? ' selected' : '')+'>Administrador</option></select></div>' +
+      '<label class="f" style="display:flex;align-items:center;gap:8px"><input type="checkbox"'+(u.activo ? ' checked' : '')+(yo ? ' disabled' : '')+' onchange="A.pf(\'activo\',this.checked)"> Usuario activo</label>' +
+      (yo ? '<div class="sub" style="margin-bottom:8px">No puedes quitarte el rol de administrador ni desactivarte a ti mismo.</div>' : '') +
+      '<div class="seg" style="margin-bottom:0"><button onclick="A.cancelU()">Cancelar</button><button class="pri" onclick="A.saveU()"'+(S.busy ? ' disabled' : '')+'>Guardar usuario</button></div></div>';
+  }
+  h += S.perfiles.map(function(x){
+    return '<div class="row tap" onclick="A.editU(\''+x.id+'\')"><span>'+esc(x.nombre || 'Sin nombre')+'<div class="sub">'+esc(x.correo || '')+(x.activo ? '' : ' · Desactivado')+'</div></span><span class="r"><span class="tag">'+(x.rol === 'admin' ? 'Administrador' : 'Empleado')+'</span>'+ic('next')+'</span></div>';
+  }).join('');
+  h += '<div class="lbl" style="margin-top:14px">Para crear un usuario nuevo: en Supabase ve a Authentication → Users → Add user (marca Auto Confirm User). Luego aparecerá aquí y le pones su nombre.</div>';
+  return h;
+}
+
+var TL = {ventas:'Venta', venta_items:'Detalle de venta', abonos:'Abono', cierres_mostrador:'Total de mostrador', clientes:'Cliente', proveedores:'Proveedor', productos:'Producto', perfiles:'Usuario', compras_proveedor:'Compra a proveedor', pagos_proveedor:'Pago a proveedor'};
+var AL = {INSERT:'Creó', UPDATE:'Editó', DELETE:'Eliminó'};
+var FLAB = {cliente_id:'Cliente', producto_id:'Producto', proveedor_id:'Proveedor', forma:'Forma', total:'Total', fecha:'Fecha', monto:'Monto', kilos:'Kilos', precio_kg:'Precio/kg', nombre:'Nombre', telefono:'Teléfono', activo:'Activo', rol:'Rol', correo:'Correo', efectivo:'Efectivo', punto_venta_1:'Punto de venta 1', punto_venta_2:'Punto de venta 2', pago_movil:'Pago móvil', nota:'Nota'};
+var FHID = {id:1, creado_en:1, actualizado_en:1, creado_por:1, venta_id:1, subtotal:1};
+var FMON = {total:1, monto:1, efectivo:1, punto_venta_1:1, punto_venta_2:1, pago_movil:1, precio_kg:1};
+
+function fval(k, v){
+  if (v === null || v === undefined || v === '') return '—';
+  if (k === 'cliente_id') { var c = S.clientes.filter(function(x){ return x.id === v; })[0]; return c ? c.nombre : '(cliente)'; }
+  if (k === 'producto_id') { var p = S.productos.filter(function(x){ return x.id === v; })[0]; return p ? p.nombre : '(producto)'; }
+  if (k === 'forma') return v === 'contado' ? 'Contado' : 'A crédito';
+  if (k === 'fecha') return fdate(v);
+  if (k === 'activo') return v ? 'Sí' : 'No';
+  if (k === 'rol') return v === 'admin' ? 'Administrador' : 'Empleado';
+  if (FMON[k]) return money(v);
+  return String(v);
+}
+
+function resumen(a){
+  var out = [], o;
+  if (a.accion === 'UPDATE') {
+    Object.keys(a.despues || {}).forEach(function(k){
+      if (FHID[k]) return;
+      var b = (a.antes || {})[k], d = a.despues[k];
+      if (JSON.stringify(b) !== JSON.stringify(d)) out.push((FLAB[k] || k) + ': ' + fval(k, b) + ' → ' + fval(k, d));
+    });
+    if (!out.length) out.push('Sin cambios visibles');
+  } else {
+    o = a.accion === 'DELETE' ? a.antes : a.despues;
+    Object.keys(o || {}).forEach(function(k){
+      if (FHID[k] || o[k] === null || o[k] === '') return;
+      out.push((FLAB[k] || k) + ': ' + fval(k, o[k]));
+    });
+  }
+  return out.slice(0, 6);
+}
+
+function vAuditoria(){
+  var f = S.aud.filtro;
+  var opts = [['', 'Todo'], ['ventas', 'Ventas'], ['abonos', 'Abonos'], ['cierres_mostrador', 'Total de mostrador'], ['clientes', 'Clientes'], ['productos', 'Productos'], ['perfiles', 'Usuarios']];
+  var h = '<div class="f"><div class="lbl">Mostrar</div><select onchange="A.audF(this.value)">' +
+    opts.map(function(o){ return '<option value="'+o[0]+'"'+(f === o[0] ? ' selected' : '')+'>'+o[1]+'</option>'; }).join('') + '</select></div>';
+  if (!S.aud.lista) return h + '<div class="lbl">Cargando…</div>';
+  if (!S.aud.lista.length) return h + '<div class="lbl" style="padding:16px 0">No hay cambios registrados.</div>';
+  h += S.aud.lista.map(function(a){
+    return '<div class="aud"><div class="t"><span>'+AL[a.accion]+' · '+(TL[a.tabla] || esc(a.tabla))+'</span></div>' +
+      '<div class="sub">'+esc(nameOf(a.usuario_id))+' · '+esc(dtime(a.fecha_hora))+'</div>' +
+      '<div class="d">'+resumen(a).map(esc).join('<br>')+'</div></div>';
+  }).join('');
+  return h + '<div class="lbl" style="margin-top:10px">Se muestran los últimos 100 cambios.</div>';
+}
+
 function render(){
   if (S.boot) { app.innerHTML = '<div class="center">Cargando…</div>'; return; }
   if (!S.user) { app.innerHTML = vLogin(); return; }
@@ -289,15 +424,29 @@ async function cargarCatalogos(){
   S.clientes = r[0].data; S.productos = r[1].data;
 }
 
+async function cargarPerfiles(){
+  var r = await db.from('perfiles').select('id,nombre,correo,rol,activo').order('nombre');
+  if (r.error) throw r.error;
+  S.perfiles = r.data; S.perfMap = {};
+  r.data.forEach(function(p){ S.perfMap[p.id] = p; });
+}
+
 async function cargarTodo(){
   S.boot = true; render();
   try {
-    var p = await db.from('perfiles').select('rol,nombre').eq('id', S.user.id).maybeSingle();
+    var p = await db.from('perfiles').select('rol,nombre,activo').eq('id', S.user.id).maybeSingle();
     if (p.error) throw p.error;
+    if (p.data && p.data.activo === false) {
+      try { await db.auth.signOut(); } catch (x) {}
+      S.user = null; S.rol = null; S.boot = false; S.busy = false;
+      setErr('Tu usuario está desactivado. Habla con el administrador.');
+      render(); return;
+    }
     if (!p.data) { S.rol = null; }
     else { S.rol = p.data.rol; S.nombre = p.data.nombre || S.user.email; }
-    if (S.rol) await cargarCatalogos();
+    if (S.rol) { await cargarCatalogos(); await cargarPerfiles(); }
     S.tab = S.rol === 'admin' ? 'inicio' : 'venta';
+    S.vm = 'cli'; S.mo.fecha = hoy();
     S.err = ''; S.msg = '';
   } catch (e) { setErr(errTxt(e)); }
   S.boot = false; S.busy = false; render();
@@ -306,16 +455,22 @@ async function cargarTodo(){
 
 async function cargarInicio(){
   try {
+    var h = hoy();
     var r = await Promise.all([
-      db.from('ventas').select('total').eq('fecha', hoy()),
+      db.from('ventas').select('total,forma').eq('fecha', h),
+      db.from('abonos').select('monto').eq('fecha', h),
+      db.from('cierres_mostrador').select('total').eq('fecha', h).maybeSingle(),
       db.from('saldo_clientes').select('saldo'),
-      db.from('ventas').select('total,forma,fecha,clientes(nombre)').order('creado_en', {ascending:false}).limit(5)
+      db.from('ventas').select('total,forma,fecha,creado_por,clientes(nombre)').order('creado_en', {ascending:false}).limit(5)
     ]);
     r.forEach(function(x){ if (x.error) throw x.error; });
-    var vh = 0; r[0].data.forEach(function(x){ vh += +x.total; });
-    var pc = 0; r[1].data.forEach(function(x){ if (+x.saldo > 0) pc += +x.saldo; });
-    S.ini = {vh:vh, pc:pc, ult:r[2].data};
-  } catch (e) { setErr(errTxt(e)); }
+    var vc = 0, contado = 0, ab = 0, pc = 0;
+    r[0].data.forEach(function(x){ vc += +x.total; if (x.forma === 'contado') contado += +x.total; });
+    r[1].data.forEach(function(x){ ab += +x.monto; });
+    r[3].data.forEach(function(x){ if (+x.saldo > 0) pc += +x.saldo; });
+    var mos = r[2].data ? +r[2].data.total : 0;
+    S.ini = {vh:vc + mos, ch:mos + contado + ab, pc:pc, mos:mos, hayMos:!!r[2].data, ult:r[4].data};
+  } catch (e) { setErr(errTxt(e)); if (!S.ini) S.ini = {vh:0, ch:0, pc:0, mos:0, hayMos:true, ult:[]}; }
   if (S.tab === 'inicio') render();
 }
 
@@ -326,6 +481,35 @@ async function cargarSaldos(){
     S.saldos = r.data;
   } catch (e) { setErr(errTxt(e)); if (!S.saldos) S.saldos = []; }
   if (S.tab === 'cobrar') render();
+}
+
+async function cargarMostrador(f){
+  var m = S.mo;
+  f = f || m.fecha || hoy(); m.fecha = f; m.cargando = true;
+  try {
+    var cols = 'id,fecha,efectivo,punto_venta_1,punto_venta_2,pago_movil,total,creado_por';
+    var q = [db.from('cierres_mostrador').select(cols).eq('fecha', f).maybeSingle()];
+    if (S.rol === 'admin') q.push(db.from('cierres_mostrador').select('id,fecha,total,creado_por').gte('fecha', addDays(hoy(), -6)).order('fecha', {ascending:false}));
+    var r = await Promise.all(q);
+    r.forEach(function(x){ if (x.error) throw x.error; });
+    m.existe = r[0].data || null;
+    FP.forEach(function(p){ var v = m.existe ? +m.existe[p[0]] : 0; m.v[p[0]] = v > 0 ? String(v) : ''; });
+    if (r[1]) m.lista = r[1].data;
+  } catch (e) { setErr(errTxt(e)); }
+  m.cargando = false;
+  if (S.tab === 'venta' && S.vm === 'mos') render();
+}
+
+async function cargarAud(){
+  S.aud.lista = null; render();
+  try {
+    var q = db.from('auditoria').select('id,fecha_hora,usuario_id,tabla,accion,registro_id,antes,despues').order('fecha_hora', {ascending:false}).limit(100);
+    if (S.aud.filtro) q = q.eq('tabla', S.aud.filtro);
+    var r = await q;
+    if (r.error) throw r.error;
+    S.aud.lista = r.data;
+  } catch (e) { setErr(errTxt(e)); S.aud.lista = []; }
+  if (S.tab === 'mas' && S.mas === 'auditoria') render();
 }
 
 /* ---------- Acciones: sesión y navegación ---------- */
@@ -347,17 +531,77 @@ A.login = async function(ev){
 
 A.salir = async function(){
   try { await db.auth.signOut(); } catch (e) {}
-  S.user = null; S.rol = null; S.nombre = ''; S.ini = null; S.saldos = null; S.hist = null;
+  S.user = null; S.rol = null; S.nombre = ''; S.ini = null; S.saldos = null; S.hist = null; S.perfiles = []; S.perfMap = {};
   S.v = {cli:'', prod:'', kilos:'1', lineas:[], forma:'contado'};
   S.msg = ''; S.err = ''; S.busy = false;
   render();
 };
 
 A.go = function(t){
-  S.tab = t; S.msg = ''; S.err = ''; S.hist = null; S.mas = 'menu'; S.ce = null; S.pe = null;
+  S.tab = t; S.msg = ''; S.err = ''; S.hist = null; S.mas = 'menu'; S.ce = null; S.pe = null; S.pf = null;
   render();
   if (t === 'inicio') cargarInicio();
   if (t === 'cobrar') cargarSaldos();
+  if (t === 'venta' && S.vm === 'mos') cargarMostrador(S.mo.fecha || hoy());
+};
+
+A.setVm = function(m){
+  S.vm = m; S.msg = ''; S.err = '';
+  if (m === 'mos' && S.rol !== 'admin') S.mo.fecha = hoy();
+  render();
+  if (m === 'mos') cargarMostrador(S.mo.fecha || hoy());
+};
+
+A.irMostrador = function(){
+  S.tab = 'venta'; S.vm = 'mos'; S.msg = ''; S.err = ''; S.mo.fecha = hoy();
+  render(); cargarMostrador(S.mo.fecha);
+};
+
+/* ---------- Acciones: total diario de mostrador ---------- */
+A.upM = function(col, v){
+  S.mo.v[col] = v;
+  var el = document.getElementById('mt'); if (el) el.textContent = money(totM());
+};
+A.pickD = function(f){
+  if (!f) return;
+  if (f > hoy()) f = hoy();
+  S.msg = ''; S.err = ''; S.mo.fecha = f; render();
+  cargarMostrador(f);
+};
+A.saveM = async function(){
+  if (S.busy) return;
+  var m = S.mo, f = m.fecha || hoy(), vals = {}, malo = false;
+  if (S.rol !== 'admin') f = hoy();
+  FP.forEach(function(p){
+    var raw = String(m.v[p[0]] || '').trim(), x = raw === '' ? 0 : num(raw);
+    if (isNaN(x) || x < 0) malo = true;
+    vals[p[0]] = Math.round(x * 100) / 100;
+  });
+  if (malo) { setErr('Revisa los montos: solo números, sin signos.'); render(); return; }
+  var total = vals.efectivo + vals.punto_venta_1 + vals.punto_venta_2 + vals.pago_movil;
+  if (!(total > 0)) { setErr('Escribe al menos un monto mayor que cero.'); render(); return; }
+  S.busy = true; render();
+  try {
+    var sel = await db.from('cierres_mostrador').select('id').eq('fecha', f).maybeSingle();
+    if (sel.error) throw sel.error;
+    var r;
+    if (sel.data) {
+      r = await db.from('cierres_mostrador').update(vals).eq('id', sel.data.id).select('id');
+      if (r.error) throw r.error;
+      if (!r.data || !r.data.length) throw new Error('No tienes permiso para corregir ese registro.');
+    } else {
+      var row = {fecha:f}; Object.keys(vals).forEach(function(k){ row[k] = vals[k]; });
+      r = await db.from('cierres_mostrador').insert(row);
+      if (r.error) {
+        if (r.error.code === '23505') throw new Error('Ese día ya tiene un total registrado por otra persona. Pídele al administrador que lo corrija.');
+        throw r.error;
+      }
+    }
+    setMsg('Total del ' + fdate(f) + ' guardado: ' + money(total));
+    S.ini = null;
+    await cargarMostrador(f);
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
 };
 
 /* ---------- Acciones: venta a cliente ---------- */
@@ -425,14 +669,14 @@ A.verHist = async function(id){
   S.msg = ''; S.err = ''; render();
   try {
     var r = await Promise.all([
-      db.from('ventas').select('fecha,forma,total,creado_en').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
-      db.from('abonos').select('fecha,monto,creado_en').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
+      db.from('ventas').select('fecha,forma,total,creado_en,creado_por').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
+      db.from('abonos').select('fecha,monto,creado_en,creado_por').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
       db.from('saldo_clientes').select('saldo').eq('id', id).maybeSingle()
     ]);
     r.forEach(function(x){ if (x.error) throw x.error; });
     var movs = [], compras = 0;
-    r[0].data.forEach(function(x){ compras += +x.total; movs.push({t:'v', forma:x.forma, m:+x.total, fecha:x.fecha, ts:x.creado_en}); });
-    r[1].data.forEach(function(x){ movs.push({t:'a', m:+x.monto, fecha:x.fecha, ts:x.creado_en}); });
+    r[0].data.forEach(function(x){ compras += +x.total; movs.push({t:'v', forma:x.forma, m:+x.total, fecha:x.fecha, ts:x.creado_en, by:x.creado_por}); });
+    r[1].data.forEach(function(x){ movs.push({t:'a', m:+x.monto, fecha:x.fecha, ts:x.creado_en, by:x.creado_por}); });
     movs.sort(function(a, b){ return a.ts < b.ts ? 1 : -1; });
     S.hist.movs = movs; S.hist.compras = compras;
     if (r[2].data) S.hist.saldo = +r[2].data.saldo;
@@ -442,8 +686,13 @@ A.verHist = async function(id){
 };
 A.cerrarHist = function(){ S.hist = null; S.msg = ''; S.err = ''; render(); };
 
-/* ---------- Acciones: clientes y productos (administrador) ---------- */
-A.mas = function(x){ S.mas = x; S.ce = null; S.pe = null; S.msg = ''; S.err = ''; render(); };
+/* ---------- Acciones: Más (administrador) ---------- */
+A.mas = async function(x){
+  S.mas = x; S.ce = null; S.pe = null; S.pf = null; S.msg = ''; S.err = ''; render();
+  if (x === 'usuarios') { try { await cargarPerfiles(); } catch (e) { setErr(errTxt(e)); } render(); }
+  if (x === 'auditoria') { try { await cargarPerfiles(); } catch (e) {} cargarAud(); }
+};
+A.audF = function(v){ S.aud.filtro = v; cargarAud(); };
 
 A.nuevoC = function(){ S.ce = {id:null, nombre:'', telefono:'', activo:true}; S.msg = ''; S.err = ''; render(); };
 A.editC = function(id){
@@ -486,6 +735,30 @@ A.saveP = async function(){
     if (r.error) throw r.error;
     await cargarCatalogos();
     S.pe = null; setMsg('Producto guardado: ' + n);
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
+};
+
+A.editU = function(id){
+  var u = S.perfiles.filter(function(x){ return x.id === id; })[0]; if (!u) return;
+  S.pf = {id:u.id, correo:u.correo, nombre:u.nombre || '', rol:u.rol, activo:u.activo}; S.msg = ''; S.err = ''; render();
+};
+A.cancelU = function(){ S.pf = null; render(); };
+A.pf = function(k, v){ S.pf[k] = v; };
+A.saveU = async function(){
+  if (S.busy) return;
+  var u = S.pf, n = (u.nombre || '').trim(), yo = u.id === S.user.id;
+  if (!n) { setErr('Escribe el nombre de la persona.'); render(); return; }
+  var row = {nombre:n};
+  if (!yo) { row.rol = u.rol; row.activo = !!u.activo; }
+  S.busy = true; render();
+  try {
+    var r = await db.from('perfiles').update(row).eq('id', u.id).select('id');
+    if (r.error) throw r.error;
+    if (!r.data || !r.data.length) throw new Error('No se pudo guardar el usuario.');
+    if (yo) S.nombre = n;
+    await cargarPerfiles();
+    S.pf = null; setMsg('Usuario guardado: ' + n);
   } catch (e) { setErr(errTxt(e)); }
   S.busy = false; render();
 };
