@@ -73,7 +73,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 /* ---------- Conexión (claves públicas; la seguridad la dan los roles de la base de datos) ---------- */
 var SUPABASE_URL = 'https://gkhomooeuogtwhasdyuo.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_6vB64x8E8iTsOIKfXsmzOg_yh2Gg0sU';
-var VERSION = '2';
+var VERSION = '3';
 
 var app = document.getElementById('app');
 if (!window.supabase) {
@@ -107,6 +107,7 @@ var IC = {
   home:'<path d="M3 11l9-8 9 8M5 10v10h14V10"/>',
   plus:'<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
   cobrar:'<path d="M17 7L7 17M17 17H7V7"/>',
+  pagar:'<path d="M7 17L17 7M7 7h10v10"/>',
   menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
   out:'<path d="M9 21H5V3h4M16 17l5-5-5-5M21 12H9"/>',
   back:'<path d="M15 6l-6 6 6 6"/>',
@@ -123,11 +124,12 @@ var FP = [['efectivo','Efectivo'], ['punto_venta_1','Punto de venta 1'], ['punto
 /* ---------- Estado ---------- */
 var S = {
   boot:true, user:null, rol:null, nombre:'', em:'', tab:'venta', busy:false, msg:'', err:'',
-  clientes:[], productos:[], perfiles:[], perfMap:{},
+  clientes:[], productos:[], proveedores:[], perfiles:[], perfMap:{},
   vm:'cli',
   v:{cli:'', prod:'', kilos:'1', lineas:[], forma:'contado'},
   mo:{fecha:'', v:{efectivo:'', punto_venta_1:'', punto_venta_2:'', pago_movil:''}, existe:null, lista:[], cargando:false},
-  ini:null, saldos:null, hist:null, mas:'menu', ce:null, pe:null, pf:null,
+  ini:null, saldos:null, hist:null, mas:'menu', ce:null, pe:null, pf:null, pve:null,
+  pagar:{saldos:null, hist:null, compra:null},
   aud:{filtro:'', lista:null}
 };
 
@@ -152,16 +154,17 @@ function vLogin(){
 }
 
 function vHead(){
-  var t = {inicio:'Inicio', venta:(S.vm === 'mos' ? 'Total de mostrador' : 'Venta a cliente'), cobrar:'Cuentas por cobrar', mas:'Más'}[S.tab];
+  var t = {inicio:'Inicio', venta:(S.vm === 'mos' ? 'Total de mostrador' : 'Venta a cliente'), cobrar:'Cuentas por cobrar', pagar:'Cuentas por pagar', mas:'Más'}[S.tab];
   if (S.tab === 'cobrar' && S.hist) t = S.hist.nombre;
-  if (S.tab === 'mas') t = {menu:'Más', clientes:'Clientes', productos:'Productos', usuarios:'Usuarios', auditoria:'Registro de cambios'}[S.mas] || 'Más';
+  if (S.tab === 'pagar' && S.pagar.hist) t = S.pagar.hist.nombre;
+  if (S.tab === 'mas') t = {menu:'Más', clientes:'Clientes', proveedores:'Proveedores', productos:'Productos', usuarios:'Usuarios', auditoria:'Registro de cambios'}[S.mas] || 'Más';
   return '<header><div><b>'+esc(t)+'</b><div class="lbl">'+esc(S.nombre)+' · '+(S.rol === 'admin' ? 'Administrador' : 'Empleado')+'</div></div>' +
     '<button class="ib" onclick="A.salir()" aria-label="Cerrar sesión">'+ic('out')+'</button></header>';
 }
 
 function vNav(){
   if (S.rol !== 'admin') return '';
-  var T = [['inicio','home','Inicio'],['venta','plus','Venta'],['cobrar','cobrar','Cobrar'],['mas','menu','Más']];
+  var T = [['inicio','home','Inicio'],['venta','plus','Venta'],['cobrar','cobrar','Cobrar'],['pagar','pagar','Pagar'],['mas','menu','Más']];
   return '<nav>' + T.map(function(t){
     return '<button class="'+(S.tab === t[0] ? 'on' : '')+'" onclick="A.go(\''+t[0]+'\')">'+ic(t[1])+t[2]+'</button>';
   }).join('') + '</nav>';
@@ -174,7 +177,7 @@ function vInicio(){
   h += '<div class="g"><div class="m"><div class="lbl">Ventas hoy</div><div class="big">'+money(i.vh)+'</div></div>' +
     '<div class="m"><div class="lbl">Cobrado hoy</div><div class="big">'+money(i.ch)+'</div></div>' +
     '<div class="m"><div class="lbl">Por cobrar</div><div class="big warnc">'+money(i.pc)+'</div></div>' +
-    '<div class="m"><div class="lbl">Mostrador hoy</div><div class="big">'+money(i.mos)+'</div></div></div>' +
+    '<div class="m"><div class="lbl">Por pagar</div><div class="big bad">'+money(i.pp)+'</div></div></div>' +
     '<div class="h">Últimas ventas a clientes</div>';
   if (!i.ult.length) h += '<div class="lbl" style="padding:12px 0">Todavía no hay ventas registradas.</div>';
   h += i.ult.map(function(v){
@@ -287,13 +290,13 @@ function vHist(){
 function vMas(){
   var h = banner();
   if (S.mas === 'menu') {
-    var it = [['clientes','Clientes'], ['productos','Productos y precios'], ['usuarios','Usuarios'], ['auditoria','Registro de cambios']];
+    var it = [['clientes','Clientes'], ['proveedores','Proveedores'], ['productos','Productos y precios'], ['usuarios','Usuarios'], ['auditoria','Registro de cambios']];
     return h + it.map(function(x){
       return '<div class="row tap" onclick="A.mas(\''+x[0]+'\')"><span>'+x[1]+'</span>'+ic('next')+'</div>';
     }).join('') + '<div class="lbl" style="margin-top:16px">Versión '+VERSION+'</div>';
   }
   var back = '<button onclick="A.mas(\'menu\')" style="margin-bottom:10px;display:inline-flex;align-items:center;gap:4px">'+ic('back',18)+' Volver</button>';
-  var body = {clientes:vClientes, productos:vProductos, usuarios:vUsuarios, auditoria:vAuditoria}[S.mas]();
+  var body = {clientes:vClientes, proveedores:vProveedores, productos:vProductos, usuarios:vUsuarios, auditoria:vAuditoria}[S.mas]();
   return back + h + body;
 }
 
@@ -349,6 +352,71 @@ function vUsuarios(){
   return h;
 }
 
+function vPagar(){
+  if (S.pagar.hist) return vHistP();
+  var P = S.pagar, c = P.compra, h = banner();
+  var prs = S.proveedores.filter(function(p){ return p.activo; });
+  if (c) {
+    if (!prs.length) {
+      h += '<div class="wn">Primero crea un proveedor en <b>Más → Proveedores</b>.</div><button onclick="A.cancelCompra()" style="margin-bottom:10px">Cancelar</button>';
+    } else {
+      h += '<div class="m" style="margin-bottom:12px"><div class="f"><div class="lbl">Proveedor</div><select onchange="A.cp(\'prov\',this.value)"><option value="">Elige un proveedor</option>' +
+        prs.map(function(p){ return '<option value="'+p.id+'"'+(c.prov === p.id ? ' selected' : '')+'>'+esc(p.nombre)+'</option>'; }).join('') + '</select></div>' +
+        '<div class="f"><div class="lbl">Monto de la compra ($)</div><input type="text" inputmode="decimal" placeholder="0.00" value="'+esc(c.monto)+'" oninput="A.cp(\'monto\',this.value)"></div>' +
+        '<div class="f"><div class="lbl">Nota (opcional)</div><input type="text" placeholder="Factura, producto…" value="'+esc(c.nota)+'" oninput="A.cp(\'nota\',this.value)"></div>' +
+        '<div class="seg"><button class="'+(c.forma === 'credito' ? 'on' : '')+'" onclick="A.cpForma(\'credito\')">A crédito</button>' +
+        '<button class="'+(c.forma === 'contado' ? 'on' : '')+'" onclick="A.cpForma(\'contado\')">De contado</button></div>' +
+        '<div class="sub" style="margin-bottom:8px">'+(c.forma === 'credito' ? 'Queda como deuda con el proveedor hasta que la pagues.' : 'Se registra la compra y su pago al mismo tiempo; no deja deuda.')+'</div>' +
+        '<div class="seg" style="margin-bottom:0"><button onclick="A.cancelCompra()">Cancelar</button><button class="pri" onclick="A.regCompra()"'+(S.busy ? ' disabled' : '')+'>'+(S.busy ? 'Guardando…' : 'Registrar compra')+'</button></div></div>';
+    }
+  } else {
+    h += '<button class="pri" style="width:100%;margin-bottom:8px" onclick="A.nuevaCompra()">Nueva compra a proveedor</button>';
+  }
+  if (!P.saldos) return h + '<div class="lbl">Cargando…</div>';
+  var tot = 0;
+  if (!P.saldos.length) h += '<div class="lbl" style="padding:24px 0;text-align:center">No le debes nada a ningún proveedor.</div>';
+  P.saldos.forEach(function(x){
+    tot += +x.saldo;
+    h += '<div class="row"><span><span style="cursor:pointer;color:var(--ac)" onclick="A.verHistP(\''+x.id+'\')">'+esc(x.nombre)+'</span><div class="sub">Debes '+money(x.saldo)+'</div></span>' +
+      '<span class="r"><input id="pg'+x.id+'" type="text" inputmode="decimal" placeholder="Monto" style="width:90px" aria-label="Monto del pago">' +
+      '<button onclick="A.pagarP(\''+x.id+'\')"'+(S.busy ? ' disabled' : '')+'>Pagar</button></span></div>';
+  });
+  h += '<div class="row" style="font-weight:600;border:none"><span>Total por pagar</span><span>'+money(tot)+'</span></div>';
+  if (P.saldos.length) h += '<div class="lbl">Toca el nombre de un proveedor para ver su historial.</div>';
+  return h;
+}
+
+function vHistP(){
+  var H = S.pagar.hist;
+  var h = '<button onclick="A.cerrarHistP()" style="margin-bottom:10px;display:inline-flex;align-items:center;gap:4px">'+ic('back',18)+' Volver</button>' + banner();
+  if (H.cargando) return h + '<div class="lbl">Cargando…</div>';
+  h += '<div class="g"><div class="m"><div class="lbl">Compras</div><div class="big">'+money(H.compras)+'</div></div>' +
+    '<div class="m"><div class="lbl">Debes</div><div class="big '+(H.saldo > 0 ? 'bad' : 'ok')+'">'+money(H.saldo)+'</div></div></div>' +
+    '<div class="h">Movimientos</div>';
+  if (!H.movs.length) h += '<div class="lbl" style="padding:12px 0">Sin movimientos.</div>';
+  h += H.movs.map(function(x){
+    return '<div class="row"><span>'+(x.t === 'p' ? 'Pago' : 'Compra')+'<div class="sub">'+fdate(x.fecha)+' · Registrado por '+esc(nameOf(x.by))+(x.nota ? ' · '+esc(x.nota) : '')+'</div></span><span class="'+(x.t === 'p' ? 'ok' : '')+'">'+(x.t === 'p' ? '−' : '')+money(x.m)+'</span></div>';
+  }).join('');
+  return h;
+}
+
+function vProveedores(){
+  var c = S.pve, h = '';
+  if (c) {
+    h += '<div class="m" style="margin-bottom:12px"><div class="f"><div class="lbl">Nombre</div><input type="text" value="'+esc(c.nombre)+'" oninput="A.vf(\'nombre\',this.value)"></div>' +
+      '<div class="f"><div class="lbl">Teléfono (opcional)</div><input type="tel" inputmode="tel" value="'+esc(c.telefono)+'" oninput="A.vf(\'telefono\',this.value)"></div>' +
+      (c.id ? '<label class="f" style="display:flex;align-items:center;gap:8px"><input type="checkbox"'+(c.activo ? ' checked' : '')+' onchange="A.vf(\'activo\',this.checked)"> Proveedor activo</label>' : '') +
+      '<div class="seg" style="margin-bottom:0"><button onclick="A.cancelV()">Cancelar</button><button class="pri" onclick="A.saveV()"'+(S.busy ? ' disabled' : '')+'>Guardar proveedor</button></div></div>';
+  } else {
+    h += '<button class="pri" style="width:100%;margin-bottom:6px" onclick="A.nuevoV()">Nuevo proveedor</button>';
+  }
+  if (!S.proveedores.length) h += '<div class="lbl" style="padding:16px 0">Aún no hay proveedores. Crea el primero.</div>';
+  h += S.proveedores.map(function(x){
+    return '<div class="row tap" onclick="A.editV(\''+x.id+'\')"><span>'+esc(x.nombre)+'<div class="sub">'+esc(x.telefono || 'Sin teléfono')+(x.activo ? '' : ' · Inactivo')+'</div></span>'+ic('next')+'</div>';
+  }).join('');
+  return h;
+}
+
 var TL = {ventas:'Venta', venta_items:'Detalle de venta', abonos:'Abono', cierres_mostrador:'Total de mostrador', clientes:'Cliente', proveedores:'Proveedor', productos:'Producto', perfiles:'Usuario', compras_proveedor:'Compra a proveedor', pagos_proveedor:'Pago a proveedor'};
 var AL = {INSERT:'Creó', UPDATE:'Editó', DELETE:'Eliminó'};
 var FLAB = {cliente_id:'Cliente', producto_id:'Producto', proveedor_id:'Proveedor', forma:'Forma', total:'Total', fecha:'Fecha', monto:'Monto', kilos:'Kilos', precio_kg:'Precio/kg', nombre:'Nombre', telefono:'Teléfono', activo:'Activo', rol:'Rol', correo:'Correo', efectivo:'Efectivo', punto_venta_1:'Punto de venta 1', punto_venta_2:'Punto de venta 2', pago_movil:'Pago móvil', nota:'Nota'};
@@ -358,6 +426,7 @@ var FMON = {total:1, monto:1, efectivo:1, punto_venta_1:1, punto_venta_2:1, pago
 function fval(k, v){
   if (v === null || v === undefined || v === '') return '—';
   if (k === 'cliente_id') { var c = S.clientes.filter(function(x){ return x.id === v; })[0]; return c ? c.nombre : '(cliente)'; }
+  if (k === 'proveedor_id') { var pv = S.proveedores.filter(function(x){ return x.id === v; })[0]; return pv ? pv.nombre : '(proveedor)'; }
   if (k === 'producto_id') { var p = S.productos.filter(function(x){ return x.id === v; })[0]; return p ? p.nombre : '(producto)'; }
   if (k === 'forma') return v === 'contado' ? 'Contado' : 'A crédito';
   if (k === 'fecha') return fdate(v);
@@ -388,7 +457,7 @@ function resumen(a){
 
 function vAuditoria(){
   var f = S.aud.filtro;
-  var opts = [['', 'Todo'], ['ventas', 'Ventas'], ['abonos', 'Abonos'], ['cierres_mostrador', 'Total de mostrador'], ['clientes', 'Clientes'], ['productos', 'Productos'], ['perfiles', 'Usuarios']];
+  var opts = [['', 'Todo'], ['ventas', 'Ventas'], ['abonos', 'Abonos'], ['cierres_mostrador', 'Total de mostrador'], ['clientes', 'Clientes'], ['proveedores', 'Proveedores'], ['compras_proveedor', 'Compras a proveedores'], ['pagos_proveedor', 'Pagos a proveedores'], ['productos', 'Productos'], ['perfiles', 'Usuarios']];
   var h = '<div class="f"><div class="lbl">Mostrar</div><select onchange="A.audF(this.value)">' +
     opts.map(function(o){ return '<option value="'+o[0]+'"'+(f === o[0] ? ' selected' : '')+'>'+o[1]+'</option>'; }).join('') + '</select></div>';
   if (!S.aud.lista) return h + '<div class="lbl">Cargando…</div>';
@@ -409,7 +478,7 @@ function render(){
       '<main>'+banner()+'<div class="wn">Tu usuario todavía no tiene un perfil asignado. Avísale al administrador.</div></main>';
     return;
   }
-  var body = {inicio:vInicio, venta:vVenta, cobrar:vCobrar, mas:vMas}[S.tab]();
+  var body = {inicio:vInicio, venta:vVenta, cobrar:vCobrar, pagar:vPagar, mas:vMas}[S.tab]();
   app.innerHTML = vHead() + '<main>' + body + '</main>' + vNav();
 }
 
@@ -422,6 +491,11 @@ async function cargarCatalogos(){
   if (r[0].error) throw r[0].error;
   if (r[1].error) throw r[1].error;
   S.clientes = r[0].data; S.productos = r[1].data;
+  if (S.rol === 'admin') {
+    var rp = await db.from('proveedores').select('id,nombre,telefono,activo').order('nombre');
+    if (rp.error) throw rp.error;
+    S.proveedores = rp.data;
+  }
 }
 
 async function cargarPerfiles(){
@@ -461,16 +535,18 @@ async function cargarInicio(){
       db.from('abonos').select('monto').eq('fecha', h),
       db.from('cierres_mostrador').select('total').eq('fecha', h).maybeSingle(),
       db.from('saldo_clientes').select('saldo'),
-      db.from('ventas').select('total,forma,fecha,creado_por,clientes(nombre)').order('creado_en', {ascending:false}).limit(5)
+      db.from('ventas').select('total,forma,fecha,creado_por,clientes(nombre)').order('creado_en', {ascending:false}).limit(5),
+      db.from('saldo_proveedores').select('saldo')
     ]);
     r.forEach(function(x){ if (x.error) throw x.error; });
     var vc = 0, contado = 0, ab = 0, pc = 0;
     r[0].data.forEach(function(x){ vc += +x.total; if (x.forma === 'contado') contado += +x.total; });
     r[1].data.forEach(function(x){ ab += +x.monto; });
     r[3].data.forEach(function(x){ if (+x.saldo > 0) pc += +x.saldo; });
+    var pp = 0; r[5].data.forEach(function(x){ if (+x.saldo > 0) pp += +x.saldo; });
     var mos = r[2].data ? +r[2].data.total : 0;
-    S.ini = {vh:vc + mos, ch:mos + contado + ab, pc:pc, mos:mos, hayMos:!!r[2].data, ult:r[4].data};
-  } catch (e) { setErr(errTxt(e)); if (!S.ini) S.ini = {vh:0, ch:0, pc:0, mos:0, hayMos:true, ult:[]}; }
+    S.ini = {vh:vc + mos, ch:mos + contado + ab, pc:pc, pp:pp, mos:mos, hayMos:!!r[2].data, ult:r[4].data};
+  } catch (e) { setErr(errTxt(e)); if (!S.ini) S.ini = {vh:0, ch:0, pc:0, pp:0, mos:0, hayMos:true, ult:[]}; }
   if (S.tab === 'inicio') render();
 }
 
@@ -481,6 +557,15 @@ async function cargarSaldos(){
     S.saldos = r.data;
   } catch (e) { setErr(errTxt(e)); if (!S.saldos) S.saldos = []; }
   if (S.tab === 'cobrar') render();
+}
+
+async function cargarSaldosP(){
+  try {
+    var r = await db.from('saldo_proveedores').select('id,nombre,saldo').gt('saldo', 0).order('saldo', {ascending:false});
+    if (r.error) throw r.error;
+    S.pagar.saldos = r.data;
+  } catch (e) { setErr(errTxt(e)); if (!S.pagar.saldos) S.pagar.saldos = []; }
+  if (S.tab === 'pagar') render();
 }
 
 async function cargarMostrador(f){
@@ -532,16 +617,19 @@ A.login = async function(ev){
 A.salir = async function(){
   try { await db.auth.signOut(); } catch (e) {}
   S.user = null; S.rol = null; S.nombre = ''; S.ini = null; S.saldos = null; S.hist = null; S.perfiles = []; S.perfMap = {};
+  S.proveedores = []; S.pagar = {saldos:null, hist:null, compra:null};
   S.v = {cli:'', prod:'', kilos:'1', lineas:[], forma:'contado'};
   S.msg = ''; S.err = ''; S.busy = false;
   render();
 };
 
 A.go = function(t){
-  S.tab = t; S.msg = ''; S.err = ''; S.hist = null; S.mas = 'menu'; S.ce = null; S.pe = null; S.pf = null;
+  S.tab = t; S.msg = ''; S.err = ''; S.hist = null; S.mas = 'menu'; S.ce = null; S.pe = null; S.pf = null; S.pve = null;
+  S.pagar.hist = null; S.pagar.compra = null;
   render();
   if (t === 'inicio') cargarInicio();
   if (t === 'cobrar') cargarSaldos();
+  if (t === 'pagar') cargarSaldosP();
   if (t === 'venta' && S.vm === 'mos') cargarMostrador(S.mo.fecha || hoy());
 };
 
@@ -686,9 +774,79 @@ A.verHist = async function(id){
 };
 A.cerrarHist = function(){ S.hist = null; S.msg = ''; S.err = ''; render(); };
 
+/* ---------- Acciones: cuentas por pagar (administrador) ---------- */
+A.nuevaCompra = function(){ S.pagar.compra = {prov:'', monto:'', nota:'', forma:'credito'}; S.msg = ''; S.err = ''; render(); };
+A.cancelCompra = function(){ S.pagar.compra = null; S.err = ''; render(); };
+A.cp = function(k, v){ S.pagar.compra[k] = v; };
+A.cpForma = function(f){ S.pagar.compra.forma = f; render(); };
+A.regCompra = async function(){
+  if (S.busy) return;
+  var c = S.pagar.compra;
+  if (!c.prov) { setErr('Elige un proveedor.'); render(); return; }
+  var m = Math.round(num(c.monto) * 100) / 100;
+  if (!(m > 0)) { setErr('Escribe el monto de la compra.'); render(); return; }
+  var nota = (c.nota || '').trim(), contado = c.forma === 'contado';
+  var notaTxt = contado ? ('Contado' + (nota ? ' · ' + nota : '')) : nota;
+  var pn = (S.proveedores.filter(function(p){ return p.id === c.prov; })[0] || {}).nombre || '';
+  S.busy = true; render();
+  try {
+    var r = await db.from('compras_proveedor').insert({proveedor_id:c.prov, total:m, nota:notaTxt || null});
+    if (r.error) throw r.error;
+    var aviso = '';
+    if (contado) {
+      var r2 = await db.from('pagos_proveedor').insert({proveedor_id:c.prov, monto:m, nota:notaTxt});
+      if (r2.error) aviso = ' Ojo: la compra se guardó, pero su pago de contado no. Regístralo con el botón Pagar.';
+    }
+    setMsg('Compra registrada: ' + money(m) + ' · ' + pn + (contado ? ' (de contado)' : ' (a crédito)') + aviso);
+    S.pagar.compra = null; S.ini = null;
+    await cargarSaldosP();
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
+};
+A.pagarP = async function(id){
+  if (S.busy) return;
+  var el = document.getElementById('pg' + id);
+  var m = Math.round(num(el && el.value) * 100) / 100;
+  var c = (S.pagar.saldos || []).filter(function(x){ return x.id === id; })[0];
+  if (!c) return;
+  if (!(m > 0)) { setErr('Escribe el monto del pago.'); render(); return; }
+  if (m > +c.saldo + 0.001) { setErr('El pago no puede superar lo que debes (' + money(c.saldo) + ').'); render(); return; }
+  S.busy = true; render();
+  try {
+    var r = await db.from('pagos_proveedor').insert({proveedor_id:id, monto:m});
+    if (r.error) throw r.error;
+    setMsg('Pago de ' + money(m) + ' registrado: ' + c.nombre);
+    S.ini = null;
+    await cargarSaldosP();
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
+};
+A.verHistP = async function(id){
+  var c = (S.pagar.saldos || []).filter(function(x){ return x.id === id; })[0];
+  S.pagar.hist = {id:id, nombre:c ? c.nombre : 'Proveedor', cargando:true, movs:[], compras:0, saldo:c ? +c.saldo : 0};
+  S.msg = ''; S.err = ''; render();
+  try {
+    var r = await Promise.all([
+      db.from('compras_proveedor').select('fecha,total,nota,creado_en,creado_por').eq('proveedor_id', id).order('creado_en', {ascending:false}).limit(200),
+      db.from('pagos_proveedor').select('fecha,monto,nota,creado_en,creado_por').eq('proveedor_id', id).order('creado_en', {ascending:false}).limit(200),
+      db.from('saldo_proveedores').select('saldo').eq('id', id).maybeSingle()
+    ]);
+    r.forEach(function(x){ if (x.error) throw x.error; });
+    var movs = [], compras = 0;
+    r[0].data.forEach(function(x){ compras += +x.total; movs.push({t:'c', m:+x.total, fecha:x.fecha, ts:x.creado_en, by:x.creado_por, nota:x.nota}); });
+    r[1].data.forEach(function(x){ movs.push({t:'p', m:+x.monto, fecha:x.fecha, ts:x.creado_en, by:x.creado_por, nota:x.nota}); });
+    movs.sort(function(a, b){ return a.ts < b.ts ? 1 : -1; });
+    S.pagar.hist.movs = movs; S.pagar.hist.compras = compras;
+    if (r[2].data) S.pagar.hist.saldo = +r[2].data.saldo;
+  } catch (e) { setErr(errTxt(e)); }
+  if (S.pagar.hist) S.pagar.hist.cargando = false;
+  render();
+};
+A.cerrarHistP = function(){ S.pagar.hist = null; S.msg = ''; S.err = ''; render(); };
+
 /* ---------- Acciones: Más (administrador) ---------- */
 A.mas = async function(x){
-  S.mas = x; S.ce = null; S.pe = null; S.pf = null; S.msg = ''; S.err = ''; render();
+  S.mas = x; S.ce = null; S.pe = null; S.pf = null; S.pve = null; S.msg = ''; S.err = ''; render();
   if (x === 'usuarios') { try { await cargarPerfiles(); } catch (e) { setErr(errTxt(e)); } render(); }
   if (x === 'auditoria') { try { await cargarPerfiles(); } catch (e) {} cargarAud(); }
 };
@@ -735,6 +893,28 @@ A.saveP = async function(){
     if (r.error) throw r.error;
     await cargarCatalogos();
     S.pe = null; setMsg('Producto guardado: ' + n);
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
+};
+
+A.nuevoV = function(){ S.pve = {id:null, nombre:'', telefono:'', activo:true}; S.msg = ''; S.err = ''; render(); };
+A.editV = function(id){
+  var c = S.proveedores.filter(function(x){ return x.id === id; })[0]; if (!c) return;
+  S.pve = {id:c.id, nombre:c.nombre, telefono:c.telefono || '', activo:c.activo}; S.msg = ''; S.err = ''; render();
+};
+A.cancelV = function(){ S.pve = null; render(); };
+A.vf = function(k, v){ S.pve[k] = v; };
+A.saveV = async function(){
+  if (S.busy) return;
+  var c = S.pve, n = (c.nombre || '').trim();
+  if (!n) { setErr('Escribe el nombre del proveedor.'); render(); return; }
+  var row = {nombre:n, telefono:(c.telefono || '').trim() || null, activo:!!c.activo};
+  S.busy = true; render();
+  try {
+    var r = c.id ? await db.from('proveedores').update(row).eq('id', c.id) : await db.from('proveedores').insert(row);
+    if (r.error) throw r.error;
+    await cargarCatalogos();
+    S.pve = null; setMsg('Proveedor guardado: ' + n);
   } catch (e) { setErr(errTxt(e)); }
   S.busy = false; render();
 };
