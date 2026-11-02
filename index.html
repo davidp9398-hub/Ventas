@@ -60,12 +60,26 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .aud{padding:10px 0;border-bottom:.5px solid var(--bd)}
 .aud .t{display:flex;justify-content:space-between;gap:8px;font-weight:600}
 .aud .d{font-size:13px;color:var(--tx2);margin-top:3px}
+
+.pn{display:flex;align-items:center;gap:6px;margin:10px 0}
+.pn .t{flex:1;text-align:center;font-weight:600}
+.pn button{padding:0 10px}
+.dw{position:relative;display:inline-flex}
+.dw input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.bars{display:flex;align-items:flex-end;gap:6px;height:100px;margin:6px 0 14px}
+.bars .c{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;font-size:11px;color:var(--tx2);gap:2px}
+.bars .b{width:100%;background:var(--ac);border-radius:4px 4px 0 0;opacity:.85}
+.card{cursor:pointer}
+.card.sel{outline:2px solid var(--ac)}
+.acts{display:flex;gap:8px;margin:14px 0}
+.acts button{flex:1;padding:0 6px;font-size:14px}
 </style>
 </head>
 <body>
 <div id="app"><div class="center">Cargando…</div></div>
 <noscript>Esta aplicación necesita JavaScript.</noscript>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script>
 (function () {
 'use strict';
@@ -73,7 +87,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 /* ---------- Conexión (claves públicas; la seguridad la dan los roles de la base de datos) ---------- */
 var SUPABASE_URL = 'https://gkhomooeuogtwhasdyuo.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_6vB64x8E8iTsOIKfXsmzOg_yh2Gg0sU';
-var VERSION = '3';
+var VERSION = '4';
 
 var app = document.getElementById('app');
 if (!window.supabase) {
@@ -90,6 +104,17 @@ function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(
 function money(n){ return '$' + (Math.round((+n || 0) * 100) / 100).toFixed(2); }
 function num(s){ return parseFloat(String(s == null ? '' : s).replace(',', '.')); }
 function fdate(s){ if(!s) return ''; var p = String(s).slice(0,10).split('-'); return (+p[2]) + ' ' + MS[+p[1]-1]; }
+async function all(mk){
+  var out = [], from = 0, step = 1000;
+  while (true) {
+    var r = await mk().range(from, from + step - 1);
+    if (r.error) throw r.error;
+    out = out.concat(r.data);
+    if (r.data.length < step) break;
+    from += step;
+  }
+  return out;
+}
 function hoy(){ return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Caracas'}).format(new Date()); }
 function addDays(s, n){ var p = s.split('-'); return new Date(Date.UTC(+p[0], +p[1]-1, +p[2] + n)).toISOString().slice(0,10); }
 function dtime(ts){
@@ -108,6 +133,7 @@ var IC = {
   plus:'<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
   cobrar:'<path d="M17 7L7 17M17 17H7V7"/>',
   pagar:'<path d="M7 17L17 7M7 7h10v10"/>',
+  chart:'<path d="M4 20V11M10 20V4M16 20v-6M22 20H2"/>',
   menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
   out:'<path d="M9 21H5V3h4M16 17l5-5-5-5M21 12H9"/>',
   back:'<path d="M15 6l-6 6 6 6"/>',
@@ -130,6 +156,8 @@ var S = {
   mo:{fecha:'', v:{efectivo:'', punto_venta_1:'', punto_venta_2:'', pago_movil:''}, existe:null, lista:[], cargando:false},
   ini:null, saldos:null, hist:null, mas:'menu', ce:null, pe:null, pf:null, pve:null,
   pagar:{saldos:null, hist:null, compra:null},
+  rep:{per:'sem', ref:'', rk:null, datos:null},
+  sa:null,
   aud:{filtro:'', lista:null}
 };
 
@@ -154,7 +182,7 @@ function vLogin(){
 }
 
 function vHead(){
-  var t = {inicio:'Inicio', venta:(S.vm === 'mos' ? 'Total de mostrador' : 'Venta a cliente'), cobrar:'Cuentas por cobrar', pagar:'Cuentas por pagar', mas:'Más'}[S.tab];
+  var t = {inicio:'Inicio', venta:(S.vm === 'mos' ? 'Total de mostrador' : 'Venta a cliente'), cobrar:'Cuentas por cobrar', pagar:'Cuentas por pagar', reporte:(S.rep.per === 'sem' ? 'Reporte semanal' : 'Reporte mensual'), mas:'Más'}[S.tab];
   if (S.tab === 'cobrar' && S.hist) t = S.hist.nombre;
   if (S.tab === 'pagar' && S.pagar.hist) t = S.pagar.hist.nombre;
   if (S.tab === 'mas') t = {menu:'Más', clientes:'Clientes', proveedores:'Proveedores', productos:'Productos', usuarios:'Usuarios', auditoria:'Registro de cambios'}[S.mas] || 'Más';
@@ -164,7 +192,7 @@ function vHead(){
 
 function vNav(){
   if (S.rol !== 'admin') return '';
-  var T = [['inicio','home','Inicio'],['venta','plus','Venta'],['cobrar','cobrar','Cobrar'],['pagar','pagar','Pagar'],['mas','menu','Más']];
+  var T = [['inicio','home','Inicio'],['venta','plus','Venta'],['cobrar','cobrar','Cobrar'],['pagar','pagar','Pagar'],['reporte','chart','Reporte'],['mas','menu','Más']];
   return '<nav>' + T.map(function(t){
     return '<button class="'+(S.tab === t[0] ? 'on' : '')+'" onclick="A.go(\''+t[0]+'\')">'+ic(t[1])+t[2]+'</button>';
   }).join('') + '</nav>';
@@ -257,7 +285,7 @@ function vMostrador(){
 
 function vCobrar(){
   if (S.hist) return vHist();
-  var h = banner();
+  var h = banner() + vSA();
   if (!S.saldos) return h + '<div class="lbl">Cargando…</div>';
   var tot = 0;
   if (!S.saldos.length) h += '<div class="lbl" style="padding:24px 0;text-align:center">Ningún cliente tiene saldo pendiente.</div>';
@@ -272,6 +300,19 @@ function vCobrar(){
   return h;
 }
 
+function vSA(){
+  var c = S.sa;
+  if (!c) return '<button style="width:100%;margin-bottom:8px" onclick="A.nuevoSA()">Cargar saldo anterior</button>';
+  var cl = S.clientes.filter(function(x){ return x.activo; });
+  if (!cl.length) return '<div class="wn">Primero crea un cliente en <b>Más → Clientes</b>.</div><button onclick="A.cancelSA()" style="margin-bottom:10px">Cancelar</button>';
+  return '<div class="m" style="margin-bottom:12px"><div class="sub" style="margin-bottom:8px">Es una deuda que el cliente ya tenía antes de usar la app. No cuenta como venta en los reportes.</div>' +
+    '<div class="f"><div class="lbl">Cliente</div><select onchange="A.saF(\'cli\',this.value)"><option value="">Elige un cliente</option>' +
+    cl.map(function(x){ return '<option value="'+x.id+'"'+(c.cli === x.id ? ' selected' : '')+'>'+esc(x.nombre)+'</option>'; }).join('') + '</select></div>' +
+    '<div class="f"><div class="lbl">Monto que debe ($)</div><input type="text" inputmode="decimal" placeholder="0.00" value="'+esc(c.monto)+'" oninput="A.saF(\'monto\',this.value)"></div>' +
+    '<div class="f"><div class="lbl">Nota (opcional)</div><input type="text" placeholder="Ej: cuenta al 31 de octubre" value="'+esc(c.nota)+'" oninput="A.saF(\'nota\',this.value)"></div>' +
+    '<div class="seg" style="margin-bottom:0"><button onclick="A.cancelSA()">Cancelar</button><button class="pri" onclick="A.saveSA()"'+(S.busy ? ' disabled' : '')+'>'+(S.busy ? 'Guardando…' : 'Cargar saldo')+'</button></div></div>';
+}
+
 function vHist(){
   var H = S.hist;
   var h = '<button onclick="A.cerrarHist()" style="margin-bottom:10px;display:inline-flex;align-items:center;gap:4px">'+ic('back',18)+' Volver</button>' + banner();
@@ -281,8 +322,8 @@ function vHist(){
     '<div class="h">Movimientos</div>';
   if (!H.movs.length) h += '<div class="lbl" style="padding:12px 0">Sin movimientos.</div>';
   h += H.movs.map(function(x){
-    var lab = x.t === 'a' ? 'Abono' : (x.forma === 'contado' ? 'Compra de contado' : 'Compra a crédito');
-    return '<div class="row"><span>'+lab+'<div class="sub">'+fdate(x.fecha)+' · Registrado por '+esc(nameOf(x.by))+'</div></span><span class="'+(x.t === 'a' ? 'ok' : '')+'">'+(x.t === 'a' ? '+' : '')+money(x.m)+'</span></div>';
+    var lab = x.t === 'a' ? 'Abono' : (x.sa ? 'Saldo anterior' : (x.forma === 'contado' ? 'Compra de contado' : 'Compra a crédito'));
+    return '<div class="row"><span>'+lab+'<div class="sub">'+fdate(x.fecha)+' · Registrado por '+esc(nameOf(x.by))+(x.nota ? ' · '+esc(x.nota) : '')+'</div></span><span class="'+(x.t === 'a' ? 'ok' : '')+'">'+(x.t === 'a' ? '+' : '')+money(x.m)+'</span></div>';
   }).join('');
   return h;
 }
@@ -417,14 +458,68 @@ function vProveedores(){
   return h;
 }
 
+var SEC = [['ventas','Ventas'], ['cobrado','Cobrado'], ['xcobrar','Por cobrar (saldo actual)'], ['xpagar','Por pagar (saldo actual)']];
+var MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+function rango(per, ref){
+  var p = ref.split('-'), t = Date.UTC(+p[0], +p[1]-1, +p[2]), d = new Date(t), st, en;
+  if (per === 'sem') { st = t - ((d.getUTCDay() + 6) % 7) * 864e5; en = st + 6 * 864e5; }
+  else { st = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1); en = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0); }
+  return [new Date(st).toISOString().slice(0, 10), new Date(en).toISOString().slice(0, 10)];
+}
+function labR(){
+  var R = S.rep, r = rango(R.per, R.ref), a = r[0].split('-'), b = r[1].split('-');
+  if (R.per === 'mes') return MN[+a[1] - 1] + ' ' + a[0];
+  if (a[1] === b[1]) return (+a[2]) + '–' + (+b[2]) + ' ' + MS[+b[1] - 1] + ' ' + b[0];
+  return (+a[2]) + ' ' + MS[+a[1] - 1] + ' – ' + (+b[2]) + ' ' + MS[+b[1] - 1] + ' ' + b[0];
+}
+function curR(){ var r = rango(S.rep.per, S.rep.ref), h = hoy(); return h >= r[0] && h <= r[1]; }
+
+function vReporte(){
+  var R = S.rep, h = banner(), sem = R.per === 'sem', D = R.datos;
+  h += '<div class="seg" style="margin-top:0"><button class="'+(sem ? 'on' : '')+'" onclick="A.setPer(\'sem\')">Semana</button>' +
+    '<button class="'+(!sem ? 'on' : '')+'" onclick="A.setPer(\'mes\')">Mes</button></div>';
+  h += '<div class="pn"><button class="ib" onclick="A.shiftR(-1)" aria-label="Anterior">'+ic('back')+'</button>' +
+    '<div class="t">'+esc(labR())+(curR() ? '<div class="lbl">'+(sem ? 'Esta semana' : 'Este mes')+'</div>' : '')+'</div>' +
+    '<button class="ib" onclick="A.shiftR(1)"'+(curR() ? ' disabled' : '')+' aria-label="Siguiente">'+ic('next')+'</button>' +
+    '<span class="dw"><button aria-label="Ir a una fecha">Fecha</button><input type="date" max="'+hoy()+'" value="'+esc(R.ref)+'" onchange="A.jumpR(this.value)" aria-label="Elegir fecha"></span></div>';
+  if (!D) return h + '<div class="lbl">Cargando…</div>';
+  var mx = Math.max.apply(null, D.bars.vals.concat([0]));
+  h += '<div class="bars">' + D.bars.vals.map(function(v, i){
+    return '<div class="c">'+(v > 0 ? Math.round(v) : '')+'<div class="b" style="height:'+(v > 0 && mx > 0 ? Math.max(4, v / mx * 64) : 0)+'px"></div>'+D.bars.labels[i]+'</div>';
+  }).join('') + '</div>';
+  var CL = {ventas:'', cobrado:'', xcobrar:'warnc', xpagar:'bad'};
+  h += '<div class="g" style="margin-bottom:8px">' + SEC.map(function(s){
+    var sel = R.rk === s[0];
+    return '<div class="m card'+(sel ? ' sel' : '')+'" role="button" tabindex="0" onclick="A.rkSel(\''+s[0]+'\')"><div class="lbl">'+s[1].replace(' (saldo actual)', '')+'</div><div class="big '+CL[s[0]]+'">'+money(D.tot[s[0]])+'</div></div>';
+  }).join('') + '</div>';
+  if (R.rk) {
+    var nm = SEC.filter(function(s){ return s[0] === R.rk; })[0][1], rows = D.rows[R.rk];
+    h += '<div class="h">Detalle · '+nm+'</div>';
+    if (!rows.length) h += '<div class="lbl" style="padding:12px 0">Sin movimientos en este periodo.</div>';
+    h += rows.map(function(x){
+      var link = x.kind === 'c' ? 'A.openC(\''+x.id+'\')' : (x.kind === 'p' ? 'A.openP(\''+x.id+'\')' : '');
+      var nme = link ? '<span style="cursor:pointer;color:var(--ac)" onclick="'+link+'">'+esc(x.n)+'</span>' : esc(x.n);
+      return '<div class="row"><span>'+nme+'<div class="sub">'+esc(x.sub)+'</div></span><span>'+money(x.v)+'</span></div>';
+    }).join('');
+    h += '<div class="row" style="font-weight:600;border:none"><span>Total</span><span>'+money(D.tot[R.rk])+'</span></div>';
+  } else {
+    h += '<div class="lbl" style="margin-bottom:6px">Toca una tarjeta para ver las cuentas que la componen.</div>';
+  }
+  h += '<div class="acts"><button onclick="A.compartir()">Compartir</button><button onclick="A.descargar(\'pdf\')">PDF</button><button onclick="A.descargar(\'csv\')">Excel</button></div>';
+  h += '<div class="lbl">Por cobrar y por pagar son el saldo de hoy, sin importar el periodo elegido.</div>';
+  return h;
+}
+
 var TL = {ventas:'Venta', venta_items:'Detalle de venta', abonos:'Abono', cierres_mostrador:'Total de mostrador', clientes:'Cliente', proveedores:'Proveedor', productos:'Producto', perfiles:'Usuario', compras_proveedor:'Compra a proveedor', pagos_proveedor:'Pago a proveedor'};
 var AL = {INSERT:'Creó', UPDATE:'Editó', DELETE:'Eliminó'};
-var FLAB = {cliente_id:'Cliente', producto_id:'Producto', proveedor_id:'Proveedor', forma:'Forma', total:'Total', fecha:'Fecha', monto:'Monto', kilos:'Kilos', precio_kg:'Precio/kg', nombre:'Nombre', telefono:'Teléfono', activo:'Activo', rol:'Rol', correo:'Correo', efectivo:'Efectivo', punto_venta_1:'Punto de venta 1', punto_venta_2:'Punto de venta 2', pago_movil:'Pago móvil', nota:'Nota'};
+var FLAB = {cliente_id:'Cliente', producto_id:'Producto', proveedor_id:'Proveedor', forma:'Forma', total:'Total', fecha:'Fecha', monto:'Monto', kilos:'Kilos', precio_kg:'Precio/kg', nombre:'Nombre', telefono:'Teléfono', activo:'Activo', rol:'Rol', correo:'Correo', efectivo:'Efectivo', punto_venta_1:'Punto de venta 1', punto_venta_2:'Punto de venta 2', pago_movil:'Pago móvil', nota:'Nota', es_saldo_anterior:'Saldo anterior'};
 var FHID = {id:1, creado_en:1, actualizado_en:1, creado_por:1, venta_id:1, subtotal:1};
 var FMON = {total:1, monto:1, efectivo:1, punto_venta_1:1, punto_venta_2:1, pago_movil:1, precio_kg:1};
 
 function fval(k, v){
   if (v === null || v === undefined || v === '') return '—';
+  if (typeof v === 'boolean') return v ? 'Sí' : 'No';
   if (k === 'cliente_id') { var c = S.clientes.filter(function(x){ return x.id === v; })[0]; return c ? c.nombre : '(cliente)'; }
   if (k === 'proveedor_id') { var pv = S.proveedores.filter(function(x){ return x.id === v; })[0]; return pv ? pv.nombre : '(proveedor)'; }
   if (k === 'producto_id') { var p = S.productos.filter(function(x){ return x.id === v; })[0]; return p ? p.nombre : '(producto)'; }
@@ -448,7 +543,7 @@ function resumen(a){
   } else {
     o = a.accion === 'DELETE' ? a.antes : a.despues;
     Object.keys(o || {}).forEach(function(k){
-      if (FHID[k] || o[k] === null || o[k] === '') return;
+      if (FHID[k] || o[k] === null || o[k] === '' || (k === 'es_saldo_anterior' && !o[k])) return;
       out.push((FLAB[k] || k) + ': ' + fval(k, o[k]));
     });
   }
@@ -478,7 +573,7 @@ function render(){
       '<main>'+banner()+'<div class="wn">Tu usuario todavía no tiene un perfil asignado. Avísale al administrador.</div></main>';
     return;
   }
-  var body = {inicio:vInicio, venta:vVenta, cobrar:vCobrar, pagar:vPagar, mas:vMas}[S.tab]();
+  var body = {inicio:vInicio, venta:vVenta, cobrar:vCobrar, pagar:vPagar, reporte:vReporte, mas:vMas}[S.tab]();
   app.innerHTML = vHead() + '<main>' + body + '</main>' + vNav();
 }
 
@@ -520,7 +615,7 @@ async function cargarTodo(){
     else { S.rol = p.data.rol; S.nombre = p.data.nombre || S.user.email; }
     if (S.rol) { await cargarCatalogos(); await cargarPerfiles(); }
     S.tab = S.rol === 'admin' ? 'inicio' : 'venta';
-    S.vm = 'cli'; S.mo.fecha = hoy();
+    S.vm = 'cli'; S.mo.fecha = hoy(); S.rep.ref = hoy(); S.rep.datos = null;
     S.err = ''; S.msg = '';
   } catch (e) { setErr(errTxt(e)); }
   S.boot = false; S.busy = false; render();
@@ -531,11 +626,11 @@ async function cargarInicio(){
   try {
     var h = hoy();
     var r = await Promise.all([
-      db.from('ventas').select('total,forma').eq('fecha', h),
+      db.from('ventas').select('total,forma').eq('es_saldo_anterior', false).eq('fecha', h),
       db.from('abonos').select('monto').eq('fecha', h),
       db.from('cierres_mostrador').select('total').eq('fecha', h).maybeSingle(),
       db.from('saldo_clientes').select('saldo'),
-      db.from('ventas').select('total,forma,fecha,creado_por,clientes(nombre)').order('creado_en', {ascending:false}).limit(5),
+      db.from('ventas').select('total,forma,fecha,creado_por,clientes(nombre)').eq('es_saldo_anterior', false).order('creado_en', {ascending:false}).limit(5),
       db.from('saldo_proveedores').select('saldo')
     ]);
     r.forEach(function(x){ if (x.error) throw x.error; });
@@ -566,6 +661,65 @@ async function cargarSaldosP(){
     S.pagar.saldos = r.data;
   } catch (e) { setErr(errTxt(e)); if (!S.pagar.saldos) S.pagar.saldos = []; }
   if (S.tab === 'pagar') render();
+}
+
+async function cargarReporte(){
+  var R = S.rep, rg = rango(R.per, R.ref), d1 = rg[0], d2 = rg[1], per = R.per;
+  R.datos = null; if (S.tab === 'reporte') render();
+  try {
+    var r = await Promise.all([
+      all(function(){ return db.from('ventas').select('cliente_id,total,forma,fecha').eq('es_saldo_anterior', false).gte('fecha', d1).lte('fecha', d2).order('fecha').order('id'); }),
+      all(function(){ return db.from('abonos').select('cliente_id,monto,fecha').gte('fecha', d1).lte('fecha', d2).order('fecha').order('id'); }),
+      all(function(){ return db.from('cierres_mostrador').select('fecha,efectivo,punto_venta_1,punto_venta_2,pago_movil,total').gte('fecha', d1).lte('fecha', d2).order('fecha').order('id'); }),
+      db.from('saldo_clientes').select('id,nombre,credito_total,abonado_total,saldo').gt('saldo', 0).order('saldo', {ascending:false}),
+      db.from('saldo_proveedores').select('id,nombre,compras_total,pagos_total,saldo').gt('saldo', 0).order('saldo', {ascending:false})
+    ]);
+    if (r[3].error) throw r[3].error;
+    if (r[4].error) throw r[4].error;
+    var cur = rango(R.per, R.ref);
+    if (R.per !== per || cur[0] !== d1 || cur[1] !== d2) return;
+    var cli = {};
+    function g(id){ return cli[id] || (cli[id] = {vt:0, nv:0, ct:0, ab:0}); }
+    function cn(id){ var c = S.clientes.filter(function(x){ return x.id === id; })[0]; return c ? c.nombre : '(cliente)'; }
+    r[0].forEach(function(v){ var o = g(v.cliente_id); o.vt += +v.total; o.nv++; if (v.forma === 'contado') o.ct += +v.total; });
+    r[1].forEach(function(a){ g(a.cliente_id).ab += +a.monto; });
+    var mos = {tot:0, dias:0, efectivo:0, punto_venta_1:0, punto_venta_2:0, pago_movil:0};
+    r[2].forEach(function(c){ mos.tot += +c.total; mos.dias++; FP.forEach(function(p){ mos[p[0]] += +c[p[0]]; }); });
+    var rows = {ventas:[], cobrado:[], xcobrar:[], xpagar:[]};
+    if (mos.tot > 0) {
+      rows.ventas.push({n:'Mostrador', kind:null, sub:mos.dias + (mos.dias === 1 ? ' día registrado' : ' días registrados'), v:mos.tot});
+      var abr = {efectivo:'Efectivo', punto_venta_1:'Punto 1', punto_venta_2:'Punto 2', pago_movil:'Pago móvil'};
+      rows.cobrado.push({n:'Mostrador', kind:null, sub:FP.map(function(p){ return mos[p[0]] > 0 ? abr[p[0]] + ' ' + money(mos[p[0]]) : ''; }).filter(Boolean).join(' · '), v:mos.tot});
+    }
+    Object.keys(cli).forEach(function(id){
+      var o = cli[id];
+      if (o.vt > 0) rows.ventas.push({n:cn(id), kind:'c', id:id, sub:o.nv + (o.nv === 1 ? ' venta' : ' ventas'), v:o.vt});
+      if (o.ct + o.ab > 0) rows.cobrado.push({n:cn(id), kind:'c', id:id, sub:[o.ct ? 'Contado ' + money(o.ct) : '', o.ab ? 'Abonos ' + money(o.ab) : ''].filter(Boolean).join(' · '), v:o.ct + o.ab});
+    });
+    r[3].data.forEach(function(x){ rows.xcobrar.push({n:x.nombre, kind:'c', id:x.id, sub:'Crédito ' + money(x.credito_total) + ' · Abonos ' + money(x.abonado_total), v:+x.saldo}); });
+    r[4].data.forEach(function(x){ rows.xpagar.push({n:x.nombre, kind:'p', id:x.id, sub:'Compras ' + money(x.compras_total) + ' · Pagos ' + money(x.pagos_total), v:+x.saldo}); });
+    var tot = {};
+    Object.keys(rows).forEach(function(k){
+      rows[k].sort(function(a, b){ return b.v - a.v; });
+      var t = 0; rows[k].forEach(function(x){ t += x.v; }); tot[k] = Math.round(t * 100) / 100;
+    });
+    /* barras: por día (semana) o por semana (mes) */
+    var vals, labels, DAY = 864e5;
+    function ts(f){ var p = f.split('-'); return Date.UTC(+p[0], +p[1] - 1, +p[2]); }
+    if (per === 'sem') {
+      vals = [0, 0, 0, 0, 0, 0, 0]; labels = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+      r[0].forEach(function(v){ vals[Math.round((ts(v.fecha) - ts(d1)) / DAY)] += +v.total; });
+      r[2].forEach(function(c){ vals[Math.round((ts(c.fecha) - ts(d1)) / DAY)] += +c.total; });
+    } else {
+      var fm = ts(d1) - ((new Date(ts(d1)).getUTCDay() + 6) % 7) * DAY, n = Math.floor((ts(d2) - fm) / (7 * DAY)) + 1;
+      vals = []; labels = [];
+      for (var i = 0; i < n; i++) { vals.push(0); labels.push('S' + (i + 1)); }
+      r[0].forEach(function(v){ vals[Math.floor((ts(v.fecha) - fm) / (7 * DAY))] += +v.total; });
+      r[2].forEach(function(c){ vals[Math.floor((ts(c.fecha) - fm) / (7 * DAY))] += +c.total; });
+    }
+    R.datos = {per:per, d1:d1, d2:d2, rows:rows, tot:tot, bars:{vals:vals, labels:labels}};
+  } catch (e) { setErr(errTxt(e)); R.datos = null; }
+  if (S.tab === 'reporte') render();
 }
 
 async function cargarMostrador(f){
@@ -617,7 +771,7 @@ A.login = async function(ev){
 A.salir = async function(){
   try { await db.auth.signOut(); } catch (e) {}
   S.user = null; S.rol = null; S.nombre = ''; S.ini = null; S.saldos = null; S.hist = null; S.perfiles = []; S.perfMap = {};
-  S.proveedores = []; S.pagar = {saldos:null, hist:null, compra:null};
+  S.proveedores = []; S.pagar = {saldos:null, hist:null, compra:null}; S.rep.datos = null; S.sa = null;
   S.v = {cli:'', prod:'', kilos:'1', lineas:[], forma:'contado'};
   S.msg = ''; S.err = ''; S.busy = false;
   render();
@@ -625,11 +779,12 @@ A.salir = async function(){
 
 A.go = function(t){
   S.tab = t; S.msg = ''; S.err = ''; S.hist = null; S.mas = 'menu'; S.ce = null; S.pe = null; S.pf = null; S.pve = null;
-  S.pagar.hist = null; S.pagar.compra = null;
+  S.pagar.hist = null; S.pagar.compra = null; S.sa = null;
   render();
   if (t === 'inicio') cargarInicio();
   if (t === 'cobrar') cargarSaldos();
   if (t === 'pagar') cargarSaldosP();
+  if (t === 'reporte') cargarReporte();
   if (t === 'venta' && S.vm === 'mos') cargarMostrador(S.mo.fecha || hoy());
 };
 
@@ -753,17 +908,17 @@ A.abonar = async function(id){
 
 A.verHist = async function(id){
   var c = (S.saldos || []).filter(function(x){ return x.id === id; })[0];
-  S.hist = {id:id, nombre:c ? c.nombre : 'Cliente', cargando:true, movs:[], compras:0, saldo:c ? +c.saldo : 0};
+  S.hist = {id:id, nombre:c ? c.nombre : ((S.clientes.filter(function(x){ return x.id === id; })[0] || {}).nombre || 'Cliente'), cargando:true, movs:[], compras:0, saldo:c ? +c.saldo : 0};
   S.msg = ''; S.err = ''; render();
   try {
     var r = await Promise.all([
-      db.from('ventas').select('fecha,forma,total,creado_en,creado_por').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
+      db.from('ventas').select('fecha,forma,total,creado_en,creado_por,es_saldo_anterior,nota').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
       db.from('abonos').select('fecha,monto,creado_en,creado_por').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
       db.from('saldo_clientes').select('saldo').eq('id', id).maybeSingle()
     ]);
     r.forEach(function(x){ if (x.error) throw x.error; });
     var movs = [], compras = 0;
-    r[0].data.forEach(function(x){ compras += +x.total; movs.push({t:'v', forma:x.forma, m:+x.total, fecha:x.fecha, ts:x.creado_en, by:x.creado_por}); });
+    r[0].data.forEach(function(x){ compras += +x.total; movs.push({t:'v', forma:x.forma, m:+x.total, fecha:x.fecha, ts:x.creado_en, by:x.creado_por, sa:x.es_saldo_anterior, nota:x.nota}); });
     r[1].data.forEach(function(x){ movs.push({t:'a', m:+x.monto, fecha:x.fecha, ts:x.creado_en, by:x.creado_por}); });
     movs.sort(function(a, b){ return a.ts < b.ts ? 1 : -1; });
     S.hist.movs = movs; S.hist.compras = compras;
@@ -823,7 +978,7 @@ A.pagarP = async function(id){
 };
 A.verHistP = async function(id){
   var c = (S.pagar.saldos || []).filter(function(x){ return x.id === id; })[0];
-  S.pagar.hist = {id:id, nombre:c ? c.nombre : 'Proveedor', cargando:true, movs:[], compras:0, saldo:c ? +c.saldo : 0};
+  S.pagar.hist = {id:id, nombre:c ? c.nombre : ((S.proveedores.filter(function(x){ return x.id === id; })[0] || {}).nombre || 'Proveedor'), cargando:true, movs:[], compras:0, saldo:c ? +c.saldo : 0};
   S.msg = ''; S.err = ''; render();
   try {
     var r = await Promise.all([
@@ -843,6 +998,117 @@ A.verHistP = async function(id){
   render();
 };
 A.cerrarHistP = function(){ S.pagar.hist = null; S.msg = ''; S.err = ''; render(); };
+
+/* ---------- Acciones: reporte (administrador) ---------- */
+A.setPer = function(p){ S.rep.per = p; S.msg = ''; S.err = ''; cargarReporte(); };
+A.shiftR = function(n){
+  var R = S.rep, old = R.ref, t = ref2t(R.ref), d = new Date(t);
+  if (R.per === 'sem') R.ref = new Date(t + n * 7 * 864e5).toISOString().slice(0, 10);
+  else R.ref = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1)).toISOString().slice(0, 10);
+  if (rango(R.per, R.ref)[0] > hoy()) { R.ref = old; return; }
+  if (curR()) R.ref = hoy();
+  S.msg = ''; S.err = ''; cargarReporte();
+};
+function ref2t(f){ var p = f.split('-'); return Date.UTC(+p[0], +p[1] - 1, +p[2]); }
+A.jumpR = function(v){ if (!v) return; if (v > hoy()) v = hoy(); S.rep.ref = v; S.msg = ''; S.err = ''; cargarReporte(); };
+A.rkSel = function(k){ S.rep.rk = S.rep.rk === k ? null : k; render(); };
+A.openC = function(id){ S.tab = 'cobrar'; S.sa = null; S.msg = ''; S.err = ''; A.verHist(id); cargarSaldos(); };
+A.openP = function(id){ S.tab = 'pagar'; S.pagar.compra = null; S.msg = ''; S.err = ''; A.verHistP(id); cargarSaldosP(); };
+
+function tituloRep(){ return 'Reporte ' + (S.rep.per === 'sem' ? 'semanal' : 'mensual') + ' · ' + labR(); }
+function textoRep(){
+  var D = S.rep.datos;
+  return tituloRep() + '\nVentas: ' + money(D.tot.ventas) + '\nCobrado: ' + money(D.tot.cobrado) +
+    '\nPor cobrar (saldo actual): ' + money(D.tot.xcobrar) + '\nPor pagar (saldo actual): ' + money(D.tot.xpagar);
+}
+function csvRep(){
+  var D = S.rep.datos, L = ['Sección;Cuenta;Detalle;Monto'];
+  function q(t){ return '"' + String(t).replace(/"/g, '""') + '"'; }
+  function m(n){ return (Math.round(n * 100) / 100).toFixed(2).replace('.', ','); }
+  SEC.forEach(function(s){
+    L.push(q(s[1]) + ';TOTAL;;' + m(D.tot[s[0]]));
+    D.rows[s[0]].forEach(function(x){ L.push(q(s[1]) + ';' + q(x.n) + ';' + q(x.sub) + ';' + m(x.v)); });
+  });
+  return '\uFEFF' + L.join('\r\n');
+}
+function pdfRep(){
+  var J = window.jspdf && window.jspdf.jsPDF;
+  if (!J) throw new Error('No se pudo cargar el generador de PDF. Revisa tu conexión e inténtalo de nuevo.');
+  var D = S.rep.datos, doc = new J({unit:'mm', format:'a4'}), y = 18;
+  function sitio(n){ if (y + n > 285) { doc.addPage(); y = 18; } }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.text('Reporte ' + (D.per === 'sem' ? 'semanal' : 'mensual'), 14, y); y += 7;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.text('Pescadería El Mero Mero · ' + labR(), 14, y); y += 5;
+  doc.setFontSize(9); doc.text('Generado el ' + fdate(hoy()) + ' por ' + S.nombre, 14, y); y += 9;
+  SEC.forEach(function(s){
+    sitio(18);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(0);
+    doc.text(s[1], 14, y); doc.text(money(D.tot[s[0]]), 196, y, {align:'right'}); y += 2; doc.line(14, y, 196, y); y += 5;
+    var rows = D.rows[s[0]];
+    if (!rows.length) { doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.text('Sin movimientos', 14, y); y += 7; }
+    rows.forEach(function(r){
+      sitio(11);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(0);
+      doc.text(String(r.n).slice(0, 60), 14, y); doc.text(money(r.v), 196, y, {align:'right'}); y += 4.5;
+      doc.setFontSize(8); doc.setTextColor(110); doc.text(String(r.sub).slice(0, 110), 14, y); doc.setTextColor(0); y += 5;
+    });
+    y += 4;
+  });
+  return doc.output('blob');
+}
+async function entregar(blob, nombre, tipo){
+  var file = null;
+  try { file = new File([blob], nombre, {type:tipo}); } catch (e) {}
+  if (file && navigator.canShare && navigator.canShare({files:[file]})) {
+    try { await navigator.share({files:[file], title:nombre}); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  var url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = nombre; document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 4000);
+}
+A.descargar = async function(tipo){
+  if (!S.rep.datos) return;
+  try {
+    var base = 'reporte-' + (S.rep.per === 'sem' ? 'semanal' : 'mensual') + '-' + S.rep.datos.d1;
+    if (tipo === 'pdf') await entregar(pdfRep(), base + '.pdf', 'application/pdf');
+    else await entregar(new Blob([csvRep()], {type:'text/csv;charset=utf-8'}), base + '.csv', 'text/csv');
+    setMsg('Archivo listo: ' + base + '.' + (tipo === 'pdf' ? 'pdf' : 'csv'));
+  } catch (e) { setErr(errTxt(e)); }
+  render();
+};
+A.compartir = async function(){
+  if (!S.rep.datos) return;
+  var t = textoRep();
+  try {
+    if (navigator.share) { await navigator.share({title:tituloRep(), text:t}); }
+    else if (navigator.clipboard) { await navigator.clipboard.writeText(t); setMsg('Resumen copiado. Pégalo en WhatsApp o donde quieras.'); }
+    else { setErr('Tu navegador no permite compartir desde aquí.'); }
+  } catch (e) { if (!e || e.name !== 'AbortError') setErr(errTxt(e)); }
+  render();
+};
+
+/* ---------- Acciones: saldo anterior de clientes (administrador) ---------- */
+A.nuevoSA = function(){ S.sa = {cli:'', monto:'', nota:''}; S.msg = ''; S.err = ''; render(); };
+A.cancelSA = function(){ S.sa = null; S.err = ''; render(); };
+A.saF = function(k, v){ S.sa[k] = v; };
+A.saveSA = async function(){
+  if (S.busy) return;
+  var c = S.sa;
+  if (!c.cli) { setErr('Elige un cliente.'); render(); return; }
+  var m = Math.round(num(c.monto) * 100) / 100;
+  if (!(m > 0)) { setErr('Escribe el monto que debe.'); render(); return; }
+  var nota = (c.nota || '').trim();
+  var cn = (S.clientes.filter(function(x){ return x.id === c.cli; })[0] || {}).nombre || '';
+  S.busy = true; render();
+  try {
+    var r = await db.from('ventas').insert({cliente_id:c.cli, forma:'credito', total:m, es_saldo_anterior:true, nota:'Saldo anterior' + (nota ? ' · ' + nota : '')});
+    if (r.error) throw r.error;
+    setMsg('Saldo anterior cargado: ' + money(m) + ' · ' + cn);
+    S.sa = null; S.ini = null;
+    await cargarSaldos();
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
+};
 
 /* ---------- Acciones: Más (administrador) ---------- */
 A.mas = async function(x){
