@@ -73,6 +73,14 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .card.sel{outline:2px solid var(--ac)}
 .acts{display:flex;gap:8px;margin:14px 0}
 .acts button{flex:1;padding:0 6px;font-size:14px}
+
+.pres{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:4px 0 8px}
+.pres button{min-height:52px;padding:4px;line-height:1.3}
+.pg{display:grid;grid-template-columns:minmax(0,1fr) 56px 56px 56px;align-items:center;padding:10px 0;border-bottom:.5px solid var(--bd);cursor:pointer}
+.pg .n{text-align:right}
+.ph{display:grid;grid-template-columns:minmax(0,1fr) 56px 56px 56px;font-size:12px;color:var(--tx2);padding-bottom:4px;border-bottom:.5px solid var(--bd)}
+.ph span+span{text-align:right}
+.tag.r{background:rgba(24,95,165,.14);color:var(--ac)}
 </style>
 </head>
 <body>
@@ -87,7 +95,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 /* ---------- Conexión (claves públicas; la seguridad la dan los roles de la base de datos) ---------- */
 var SUPABASE_URL = 'https://gkhomooeuogtwhasdyuo.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_6vB64x8E8iTsOIKfXsmzOg_yh2Gg0sU';
-var VERSION = '4';
+var VERSION = '4.1';
 
 var app = document.getElementById('app');
 if (!window.supabase) {
@@ -104,6 +112,33 @@ function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(
 function money(n){ return '$' + (Math.round((+n || 0) * 100) / 100).toFixed(2); }
 function num(s){ return parseFloat(String(s == null ? '' : s).replace(',', '.')); }
 function fdate(s){ if(!s) return ''; var p = String(s).slice(0,10).split('-'); return (+p[2]) + ' ' + MS[+p[1]-1]; }
+var PRES = [['entero','Entero'], ['ruedas','Ruedas'], ['filete','Filete']];
+function presLab(k){ var x = PRES.filter(function(p){ return p[0] === k; })[0]; return x ? x[1] : k; }
+function listaDe(p, k){ var v = p ? p['precio_' + k] : null; return (v === null || v === undefined) ? null : +v; }
+function presDe(p){ return PRES.map(function(x){ return x[0]; }).filter(function(k){ return listaDe(p, k) !== null; }); }
+function espDe(cli, pid, k){
+  if (!cli) return null;
+  return S.precios.filter(function(x){ return x.cliente_id === cli && x.producto_id === pid && x.presentacion === k; })[0] || null;
+}
+function precioDe(cli, p, k){
+  var l = listaDe(p, k), e = espDe(cli, p.id, k);
+  return e ? {precio:+e.precio, esp:true, lista:l} : {precio:l, esp:false, lista:l};
+}
+function tipoDe(id){ var c = S.clientes.filter(function(x){ return x.id === id; })[0]; return c && c.tipo === 'restaurante' ? 'restaurante' : 'particular'; }
+function tgl(t, on, fn){ return '<button class="'+(on ? 'on' : '')+'" aria-pressed="'+on+'" onclick="'+fn+'">'+t+'</button>'; }
+function filtroClientes(n){
+  return '<div class="lbl" style="margin-bottom:4px">Mostrar</div><div class="seg" style="margin-top:0">' +
+    tgl('Restaurantes ('+n.restaurante+')', S.cf.restaurante, "A.tfC('restaurante')") +
+    tgl('Particulares ('+n.particular+')', S.cf.particular, "A.tfC('particular')") + '</div>';
+}
+function tagTipo(t){ return '<span class="tag'+(t === 'restaurante' ? ' r' : '')+'">'+(t === 'restaurante' ? 'Restaurante' : 'Particular')+'</span>'; }
+function opcionesClientes(cl, sel){
+  var g = {restaurante:[], particular:[]};
+  cl.forEach(function(c){ g[c.tipo === 'restaurante' ? 'restaurante' : 'particular'].push(c); });
+  function opts(a){ return a.map(function(c){ return '<option value="'+c.id+'"'+(sel === c.id ? ' selected' : '')+'>'+esc(c.nombre)+'</option>'; }).join(''); }
+  return (g.restaurante.length ? '<optgroup label="Restaurantes">'+opts(g.restaurante)+'</optgroup>' : '') +
+         (g.particular.length ? '<optgroup label="Particulares">'+opts(g.particular)+'</optgroup>' : '');
+}
 async function all(mk){
   var out = [], from = 0, step = 1000;
   while (true) {
@@ -158,6 +193,7 @@ var S = {
   pagar:{saldos:null, hist:null, compra:null},
   rep:{per:'sem', ref:'', rk:null, datos:null},
   sa:null,
+  precios:[], cf:{restaurante:true, particular:true}, sp:null,
   aud:{filtro:'', lista:null}
 };
 
@@ -225,23 +261,27 @@ function vVenta(){
 
 function vVentaCli(){
   var cl = S.clientes.filter(function(c){ return c.activo; });
-  var pr = S.productos.filter(function(p){ return p.activo; });
+  var pr = S.productos.filter(function(p){ return p.activo && presDe(p).length; });
   var v = S.v;
   if (!cl.length || !pr.length) {
     var falta = (!cl.length ? 'clientes' : '') + (!cl.length && !pr.length ? ' y ' : '') + (!pr.length ? 'productos' : '');
     return '<div class="wn">Antes de vender hace falta crear ' + falta + '.' +
       (S.rol === 'admin' ? ' Hazlo en <b>Más</b>.' : ' Pídeselo al administrador.') + '</div>';
   }
-  var h = '<div class="f"><div class="lbl">Cliente</div><select onchange="A.setCli(this.value)"><option value="">Elige un cliente</option>' +
-    cl.map(function(c){ return '<option value="'+c.id+'"'+(v.cli === c.id ? ' selected' : '')+'>'+esc(c.nombre)+'</option>'; }).join('') + '</select></div>';
-  var pid = v.prod || pr[0].id;
-  h += '<div class="lbl">Producto y kilos</div><div style="display:flex;gap:8px;margin-bottom:6px">' +
-    '<select style="flex:1" onchange="A.setProd(this.value)">' +
-    pr.map(function(p){ return '<option value="'+p.id+'"'+(pid === p.id ? ' selected' : '')+'>'+esc(p.nombre)+' · '+money(p.precio_kg)+'/kg</option>'; }).join('') +
-    '</select><input style="width:84px" type="text" inputmode="decimal" value="'+esc(v.kilos)+'" oninput="A.setKilos(this.value)" aria-label="Kilos">' +
-    '<button class="ib" onclick="A.addL()" aria-label="Agregar producto">'+ic('plus')+'</button></div>';
+  var h = '<div class="f"><div class="lbl">Cliente</div><select onchange="A.setCli(this.value)"><option value="">Elige un cliente</option>' + opcionesClientes(cl, v.cli) + '</select></div>';
+  var p = pr.filter(function(x){ return x.id === v.prod; })[0] || pr[0];
+  var av = presDe(p), pres = av.indexOf(v.pres) >= 0 ? v.pres : av[0];
+  h += '<div class="f"><div class="lbl">Producto</div><select onchange="A.setProd(this.value)">' +
+    pr.map(function(x){ return '<option value="'+x.id+'"'+(x.id === p.id ? ' selected' : '')+'>'+esc(x.nombre)+'</option>'; }).join('') + '</select></div>';
+  h += '<div class="lbl">Presentación</div><div class="pres">' + PRES.map(function(x){
+    var k = x[0], ok = av.indexOf(k) >= 0, i = ok ? precioDe(v.cli, p, k) : null;
+    return '<button '+(ok ? '' : 'disabled ')+'class="'+(ok && pres === k ? 'on' : '')+'" onclick="A.setPres(\''+k+'\')">'+x[1]+'<br><span style="font-size:12px">'+(ok ? money(i.precio)+(i.esp ? ' · especial' : '') : '—')+'</span></button>';
+  }).join('') + '</div>';
+  h += '<div style="display:flex;gap:8px;margin-bottom:6px"><input style="width:96px" type="text" inputmode="decimal" value="'+esc(v.kilos)+'" oninput="A.setKilos(this.value)" aria-label="Kilos">' +
+    '<button style="flex:1" onclick="A.addL()">Agregar al pedido</button></div>';
   h += v.lineas.map(function(l, i){
-    return '<div class="row"><span>'+esc(l.nombre)+' · '+l.kilos+' kg<div class="sub">'+money(l.precio)+'/kg</div></span><span class="r">'+money(l.kilos * l.precio)+
+    return '<div class="row"><span>'+esc(l.nombre)+' · '+presLab(l.pres)+' · '+l.kilos+' kg<div class="sub">'+money(l.precio)+'/kg'+
+      (l.esp ? ' · <span style="color:var(--ac)">Precio especial</span> (lista '+money(l.lista)+')' : '')+'</div></span><span class="r">'+money(l.kilos * l.precio)+
       '<button class="ib" style="border:none" onclick="A.delL('+i+')" aria-label="Quitar">'+ic('x',18)+'</button></span></div>';
   }).join('');
   h += '<div class="seg"><button class="'+(v.forma === 'contado' ? 'on' : '')+'" onclick="A.forma(\'contado\')">Contado</button>' +
@@ -287,16 +327,19 @@ function vCobrar(){
   if (S.hist) return vHist();
   var h = banner() + vSA();
   if (!S.saldos) return h + '<div class="lbl">Cargando…</div>';
-  var tot = 0;
-  if (!S.saldos.length) h += '<div class="lbl" style="padding:24px 0;text-align:center">Ningún cliente tiene saldo pendiente.</div>';
-  S.saldos.forEach(function(c){
+  var n = {restaurante:0, particular:0};
+  S.saldos.forEach(function(c){ n[tipoDe(c.id)]++; });
+  h += filtroClientes(n);
+  var vis = S.saldos.filter(function(c){ return S.cf[tipoDe(c.id)]; }), tot = 0;
+  if (!vis.length) h += '<div class="lbl" style="padding:24px 0;text-align:center">Ningún cliente tiene saldo pendiente.</div>';
+  vis.forEach(function(c){
     tot += +c.saldo;
-    h += '<div class="row"><span><span style="cursor:pointer;color:var(--ac)" onclick="A.verHist(\''+c.id+'\')">'+esc(c.nombre)+'</span><div class="sub">Saldo '+money(c.saldo)+'</div></span>' +
+    h += '<div class="row"><span><span style="cursor:pointer;color:var(--ac)" onclick="A.verHist(\''+c.id+'\')">'+esc(c.nombre)+'</span> '+tagTipo(tipoDe(c.id))+'<div class="sub">Saldo '+money(c.saldo)+'</div></span>' +
       '<span class="r"><input id="ab'+c.id+'" type="text" inputmode="decimal" placeholder="Monto" style="width:90px" aria-label="Monto del abono">' +
       '<button onclick="A.abonar(\''+c.id+'\')"'+(S.busy ? ' disabled' : '')+'>Abonar</button></span></div>';
   });
   h += '<div class="row" style="font-weight:600;border:none"><span>Total pendiente</span><span>'+money(tot)+'</span></div>';
-  if (S.saldos.length) h += '<div class="lbl">Toca el nombre de un cliente para ver su historial.</div>';
+  if (vis.length) h += '<div class="lbl">Toca el nombre de un cliente para ver su historial.</div>';
   return h;
 }
 
@@ -343,18 +386,51 @@ function vMas(){
 
 function vClientes(){
   var c = S.ce, h = '';
+  var n = {restaurante:0, particular:0};
+  S.clientes.forEach(function(x){ n[x.tipo === 'restaurante' ? 'restaurante' : 'particular']++; });
   if (c) {
     h += '<div class="m" style="margin-bottom:12px"><div class="f"><div class="lbl">Nombre</div><input type="text" value="'+esc(c.nombre)+'" oninput="A.ce(\'nombre\',this.value)"></div>' +
       '<div class="f"><div class="lbl">Teléfono (opcional)</div><input type="tel" inputmode="tel" value="'+esc(c.telefono)+'" oninput="A.ce(\'telefono\',this.value)"></div>' +
+      '<div class="f"><div class="lbl">Tipo de cliente</div><div class="seg" style="margin:0"><button class="'+(c.tipo === 'restaurante' ? 'on' : '')+'" onclick="A.ceTipo(\'restaurante\')">Restaurante</button>' +
+      '<button class="'+(c.tipo === 'particular' ? 'on' : '')+'" onclick="A.ceTipo(\'particular\')">Particular</button></div></div>' +
       (c.id ? '<label class="f" style="display:flex;align-items:center;gap:8px"><input type="checkbox"'+(c.activo ? ' checked' : '')+' onchange="A.ce(\'activo\',this.checked)"> Cliente activo</label>' : '') +
       '<div class="seg" style="margin-bottom:0"><button onclick="A.cancelC()">Cancelar</button><button class="pri" onclick="A.saveC()"'+(S.busy ? ' disabled' : '')+'>Guardar cliente</button></div></div>';
+    if (c.id) h += vPreciosEsp();
   } else {
-    h += '<button class="pri" style="width:100%;margin-bottom:6px" onclick="A.nuevoC()">Nuevo cliente</button>';
+    h += '<button class="pri" style="width:100%;margin-bottom:10px" onclick="A.nuevoC()">Nuevo cliente</button>' + filtroClientes(n);
   }
-  if (!S.clientes.length) h += '<div class="lbl" style="padding:16px 0">Aún no hay clientes. Crea el primero.</div>';
-  h += S.clientes.map(function(x){
-    return '<div class="row tap" onclick="A.editC(\''+x.id+'\')"><span>'+esc(x.nombre)+'<div class="sub">'+esc(x.telefono || 'Sin teléfono')+(x.activo ? '' : ' · Inactivo')+'</div></span>'+ic('next')+'</div>';
+  if (!c) {
+    if (!S.clientes.length) h += '<div class="lbl" style="padding:16px 0">Aún no hay clientes. Crea el primero.</div>';
+    h += S.clientes.filter(function(x){ return S.cf[x.tipo === 'restaurante' ? 'restaurante' : 'particular']; }).map(function(x){
+      return '<div class="row tap" onclick="A.editC(\''+x.id+'\')"><span>'+esc(x.nombre)+'<div class="sub">'+esc(x.telefono || 'Sin teléfono')+(x.activo ? '' : ' · Inactivo')+'</div></span><span class="r">'+tagTipo(x.tipo)+ic('next')+'</span></div>';
+    }).join('');
+  }
+  return h;
+}
+
+function vPreciosEsp(){
+  var cid = S.ce.id, sp = S.sp;
+  var h = '<div class="h">Precios especiales de este cliente</div>';
+  var rows = S.precios.filter(function(x){ return x.cliente_id === cid; });
+  if (!rows.length) h += '<div class="sub" style="margin-bottom:6px">Paga el precio de lista en todo. Aquí solo se guardan las excepciones.</div>';
+  h += rows.map(function(x){
+    var p = S.productos.filter(function(q){ return q.id === x.producto_id; })[0], l = p ? listaDe(p, x.presentacion) : null;
+    return '<div class="row"><span>'+esc(p ? p.nombre : '(producto)')+' · '+presLab(x.presentacion)+'<div class="sub">Lista '+(l === null ? '—' : money(l))+'</div></span>' +
+      '<span class="r">'+money(x.precio)+'<button class="ib" style="border:none" onclick="A.delSP(\''+x.id+'\')" aria-label="Quitar precio especial">'+ic('x',18)+'</button></span></div>';
   }).join('');
+  if (!sp) return h + '<button style="width:100%;margin-top:8px" onclick="A.nuevoSP()">Agregar precio especial</button>';
+  var pr = S.productos.filter(function(q){ return q.activo && presDe(q).length; });
+  if (!pr.length) return h + '<div class="wn">Primero crea productos con precio.</div>';
+  var p = pr.filter(function(q){ return q.id === sp.prod; })[0] || pr[0];
+  var av = presDe(p), pres = av.indexOf(sp.pres) >= 0 ? sp.pres : av[0];
+  h += '<div class="m" style="margin-top:8px"><div class="f"><div class="lbl">Producto</div><select onchange="A.spProd(this.value)">' +
+    pr.map(function(q){ return '<option value="'+q.id+'"'+(q.id === p.id ? ' selected' : '')+'>'+esc(q.nombre)+'</option>'; }).join('') + '</select></div>' +
+    '<div class="lbl">Presentación</div><div class="pres">' + PRES.map(function(x){
+      var ok = av.indexOf(x[0]) >= 0;
+      return '<button '+(ok ? '' : 'disabled ')+'class="'+(ok && pres === x[0] ? 'on' : '')+'" onclick="A.spPres(\''+x[0]+'\')">'+x[1]+'<br><span style="font-size:12px">'+(ok ? 'Lista '+money(listaDe(p, x[0])) : '—')+'</span></button>';
+    }).join('') + '</div>' +
+    '<div class="f"><div class="lbl">Precio especial por kilo ($)</div><input type="text" inputmode="decimal" placeholder="0.00" value="'+esc(sp.precio)+'" oninput="A.spF(\'precio\',this.value)"></div>' +
+    '<div class="seg" style="margin-bottom:0"><button onclick="A.cancelSP()">Cancelar</button><button class="pri" onclick="A.saveSP()"'+(S.busy ? ' disabled' : '')+'>Guardar precio</button></div></div>';
   return h;
 }
 
@@ -362,17 +438,22 @@ function vProductos(){
   var p = S.pe, h = '';
   if (p) {
     h += '<div class="m" style="margin-bottom:12px"><div class="f"><div class="lbl">Nombre</div><input type="text" value="'+esc(p.nombre)+'" oninput="A.pe(\'nombre\',this.value)"></div>' +
-      '<div class="f"><div class="lbl">Precio por kilo ($)</div><input type="text" inputmode="decimal" value="'+esc(p.precio)+'" oninput="A.pe(\'precio\',this.value)"></div>' +
+      '<div class="lbl">Precio por kilo ($)</div><div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:4px">' +
+      [['pe','Entero'],['pr','Ruedas'],['pf','Filete']].map(function(x){
+        return '<div><div class="lbl">'+x[1]+'</div><input type="text" inputmode="decimal" placeholder="—" value="'+esc(p[x[0]])+'" oninput="A.pe(\''+x[0]+'\',this.value)" aria-label="Precio '+x[1]+'"></div>';
+      }).join('') + '</div><div class="sub" style="margin-bottom:10px">Deja vacía la presentación que no vendes.</div>' +
       (p.id ? '<label class="f" style="display:flex;align-items:center;gap:8px"><input type="checkbox"'+(p.activo ? ' checked' : '')+' onchange="A.pe(\'activo\',this.checked)"> Producto activo</label>' : '') +
       '<div class="seg" style="margin-bottom:0"><button onclick="A.cancelP()">Cancelar</button><button class="pri" onclick="A.saveP()"'+(S.busy ? ' disabled' : '')+'>Guardar producto</button></div></div>';
   } else {
-    h += '<button class="pri" style="width:100%;margin-bottom:6px" onclick="A.nuevoP()">Nuevo producto</button>';
+    h += '<button class="pri" style="width:100%;margin-bottom:10px" onclick="A.nuevoP()">Nuevo producto</button>';
   }
-  if (!S.productos.length) h += '<div class="lbl" style="padding:16px 0">Aún no hay productos. Crea el primero.</div>';
+  if (!S.productos.length) return h + '<div class="lbl" style="padding:16px 0">Aún no hay productos. Crea el primero.</div>';
+  h += '<div class="ph"><span>Precio por kilo ($)</span><span>Entero</span><span>Ruedas</span><span>Filete</span></div>';
   h += S.productos.map(function(x){
-    return '<div class="row tap" onclick="A.editP(\''+x.id+'\')"><span>'+esc(x.nombre)+'<div class="sub">'+money(x.precio_kg)+' por kilo'+(x.activo ? '' : ' · Inactivo')+'</div></span>'+ic('next')+'</div>';
+    function c(k){ var v = listaDe(x, k); return '<span class="n"'+(v === null ? ' style="color:var(--tx2)"' : '')+'>'+(v === null ? '—' : v.toFixed(2))+'</span>'; }
+    return '<div class="pg" onclick="A.editP(\''+x.id+'\')"><span style="font-weight:500">'+esc(x.nombre)+(x.activo ? '' : '<div class="sub">Inactivo</div>')+'</span>'+c('entero')+c('ruedas')+c('filete')+'</div>';
   }).join('');
-  return h;
+  return h + '<div class="lbl" style="margin-top:8px">Toca un producto para editar sus precios. El guion significa que no se vende así.</div>';
 }
 
 function vUsuarios(){
@@ -511,15 +592,17 @@ function vReporte(){
   return h;
 }
 
-var TL = {ventas:'Venta', venta_items:'Detalle de venta', abonos:'Abono', cierres_mostrador:'Total de mostrador', clientes:'Cliente', proveedores:'Proveedor', productos:'Producto', perfiles:'Usuario', compras_proveedor:'Compra a proveedor', pagos_proveedor:'Pago a proveedor'};
+var TL = {ventas:'Venta', venta_items:'Detalle de venta', abonos:'Abono', cierres_mostrador:'Total de mostrador', clientes:'Cliente', proveedores:'Proveedor', productos:'Producto', perfiles:'Usuario', compras_proveedor:'Compra a proveedor', pagos_proveedor:'Pago a proveedor', precios_cliente:'Precio especial'};
 var AL = {INSERT:'Creó', UPDATE:'Editó', DELETE:'Eliminó'};
-var FLAB = {cliente_id:'Cliente', producto_id:'Producto', proveedor_id:'Proveedor', forma:'Forma', total:'Total', fecha:'Fecha', monto:'Monto', kilos:'Kilos', precio_kg:'Precio/kg', nombre:'Nombre', telefono:'Teléfono', activo:'Activo', rol:'Rol', correo:'Correo', efectivo:'Efectivo', punto_venta_1:'Punto de venta 1', punto_venta_2:'Punto de venta 2', pago_movil:'Pago móvil', nota:'Nota', es_saldo_anterior:'Saldo anterior'};
+var FLAB = {cliente_id:'Cliente', producto_id:'Producto', proveedor_id:'Proveedor', forma:'Forma', total:'Total', fecha:'Fecha', monto:'Monto', kilos:'Kilos', precio_kg:'Precio/kg', nombre:'Nombre', telefono:'Teléfono', activo:'Activo', rol:'Rol', correo:'Correo', efectivo:'Efectivo', punto_venta_1:'Punto de venta 1', punto_venta_2:'Punto de venta 2', pago_movil:'Pago móvil', nota:'Nota', es_saldo_anterior:'Saldo anterior', tipo:'Tipo', presentacion:'Presentación', precio:'Precio especial', precio_entero:'Precio entero', precio_ruedas:'Precio ruedas', precio_filete:'Precio filete'};
 var FHID = {id:1, creado_en:1, actualizado_en:1, creado_por:1, venta_id:1, subtotal:1};
-var FMON = {total:1, monto:1, efectivo:1, punto_venta_1:1, punto_venta_2:1, pago_movil:1, precio_kg:1};
+var FMON = {total:1, monto:1, efectivo:1, punto_venta_1:1, punto_venta_2:1, pago_movil:1, precio_kg:1, precio:1, precio_entero:1, precio_ruedas:1, precio_filete:1};
 
 function fval(k, v){
   if (v === null || v === undefined || v === '') return '—';
   if (typeof v === 'boolean') return v ? 'Sí' : 'No';
+  if (k === 'tipo') return v === 'restaurante' ? 'Restaurante' : 'Particular';
+  if (k === 'presentacion') return presLab(v);
   if (k === 'cliente_id') { var c = S.clientes.filter(function(x){ return x.id === v; })[0]; return c ? c.nombre : '(cliente)'; }
   if (k === 'proveedor_id') { var pv = S.proveedores.filter(function(x){ return x.id === v; })[0]; return pv ? pv.nombre : '(proveedor)'; }
   if (k === 'producto_id') { var p = S.productos.filter(function(x){ return x.id === v; })[0]; return p ? p.nombre : '(producto)'; }
@@ -552,7 +635,7 @@ function resumen(a){
 
 function vAuditoria(){
   var f = S.aud.filtro;
-  var opts = [['', 'Todo'], ['ventas', 'Ventas'], ['abonos', 'Abonos'], ['cierres_mostrador', 'Total de mostrador'], ['clientes', 'Clientes'], ['proveedores', 'Proveedores'], ['compras_proveedor', 'Compras a proveedores'], ['pagos_proveedor', 'Pagos a proveedores'], ['productos', 'Productos'], ['perfiles', 'Usuarios']];
+  var opts = [['', 'Todo'], ['ventas', 'Ventas'], ['abonos', 'Abonos'], ['cierres_mostrador', 'Total de mostrador'], ['clientes', 'Clientes'], ['precios_cliente', 'Precios especiales'], ['proveedores', 'Proveedores'], ['compras_proveedor', 'Compras a proveedores'], ['pagos_proveedor', 'Pagos a proveedores'], ['productos', 'Productos'], ['perfiles', 'Usuarios']];
   var h = '<div class="f"><div class="lbl">Mostrar</div><select onchange="A.audF(this.value)">' +
     opts.map(function(o){ return '<option value="'+o[0]+'"'+(f === o[0] ? ' selected' : '')+'>'+o[1]+'</option>'; }).join('') + '</select></div>';
   if (!S.aud.lista) return h + '<div class="lbl">Cargando…</div>';
@@ -580,12 +663,14 @@ function render(){
 /* ---------- Carga de datos ---------- */
 async function cargarCatalogos(){
   var r = await Promise.all([
-    db.from('clientes').select('id,nombre,telefono,activo').order('nombre'),
-    db.from('productos').select('id,nombre,precio_kg,activo').order('nombre')
+    db.from('clientes').select('id,nombre,telefono,activo,tipo').order('nombre'),
+    db.from('productos').select('id,nombre,precio_entero,precio_ruedas,precio_filete,activo').order('nombre'),
+    db.from('precios_cliente').select('id,cliente_id,producto_id,presentacion,precio')
   ]);
   if (r[0].error) throw r[0].error;
   if (r[1].error) throw r[1].error;
-  S.clientes = r[0].data; S.productos = r[1].data;
+  if (r[2].error) throw r[2].error;
+  S.clientes = r[0].data; S.productos = r[1].data; S.precios = r[2].data;
   if (S.rol === 'admin') {
     var rp = await db.from('proveedores').select('id,nombre,telefono,activo').order('nombre');
     if (rp.error) throw rp.error;
@@ -652,6 +737,12 @@ async function cargarSaldos(){
     S.saldos = r.data;
   } catch (e) { setErr(errTxt(e)); if (!S.saldos) S.saldos = []; }
   if (S.tab === 'cobrar') render();
+}
+
+async function cargarPrecios(){
+  var r = await db.from('precios_cliente').select('id,cliente_id,producto_id,presentacion,precio');
+  if (r.error) throw r.error;
+  S.precios = r.data;
 }
 
 async function cargarSaldosP(){
@@ -779,7 +870,7 @@ A.salir = async function(){
 
 A.go = function(t){
   S.tab = t; S.msg = ''; S.err = ''; S.hist = null; S.mas = 'menu'; S.ce = null; S.pe = null; S.pf = null; S.pve = null;
-  S.pagar.hist = null; S.pagar.compra = null; S.sa = null;
+  S.pagar.hist = null; S.pagar.compra = null; S.sa = null; S.sp = null;
   render();
   if (t === 'inicio') cargarInicio();
   if (t === 'cobrar') cargarSaldos();
@@ -848,20 +939,31 @@ A.saveM = async function(){
 };
 
 /* ---------- Acciones: venta a cliente ---------- */
-A.setCli = function(v){ S.v.cli = v; };
-A.setProd = function(v){ S.v.prod = v; };
+A.setCli = function(v){
+  S.v.cli = v;
+  S.v.lineas.forEach(function(l){
+    var p = S.productos.filter(function(x){ return x.id === l.producto_id; })[0];
+    if (!p) return;
+    var i = precioDe(v, p, l.pres);
+    if (i.precio !== null) { l.precio = i.precio; l.esp = i.esp; l.lista = i.lista; }
+  });
+  render();
+};
+A.setProd = function(v){ S.v.prod = v; S.v.pres = ''; render(); };
+A.setPres = function(k){ S.v.pres = k; render(); };
 A.setKilos = function(v){ S.v.kilos = v; };
 A.forma = function(f){ S.v.forma = f; render(); };
 A.delL = function(i){ S.v.lineas.splice(i, 1); render(); };
 A.addL = function(){
-  var pr = S.productos.filter(function(p){ return p.activo; });
-  var id = S.v.prod || (pr[0] && pr[0].id);
-  var p = pr.filter(function(x){ return x.id === id; })[0];
+  var pr = S.productos.filter(function(p){ return p.activo && presDe(p).length; });
+  var p = pr.filter(function(x){ return x.id === S.v.prod; })[0] || pr[0];
   var k = num(S.v.kilos);
   if (!p) { setErr('Elige un producto.'); render(); return; }
   if (!(k > 0)) { setErr('Escribe cuántos kilos son.'); render(); return; }
+  var av = presDe(p), pres = av.indexOf(S.v.pres) >= 0 ? S.v.pres : av[0];
+  var i = precioDe(S.v.cli, p, pres);
   S.err = ''; S.msg = '';
-  S.v.lineas.push({producto_id:p.id, nombre:p.nombre, kilos:Math.round(k * 100) / 100, precio:+p.precio_kg});
+  S.v.lineas.push({producto_id:p.id, nombre:p.nombre, pres:pres, kilos:Math.round(k * 100) / 100, precio:i.precio, esp:i.esp, lista:i.lista});
   render();
 };
 A.reg = async function(){
@@ -875,7 +977,7 @@ A.reg = async function(){
   try {
     var r = await db.from('ventas').insert({cliente_id:v.cli, forma:v.forma, total:total}).select('id').single();
     if (r.error) throw r.error;
-    var items = v.lineas.map(function(l){ return {venta_id:r.data.id, producto_id:l.producto_id, kilos:l.kilos, precio_kg:l.precio}; });
+    var items = v.lineas.map(function(l){ return {venta_id:r.data.id, producto_id:l.producto_id, presentacion:l.pres, kilos:l.kilos, precio_kg:l.precio}; });
     var r2 = await db.from('venta_items').insert(items);
     var cn = (S.clientes.filter(function(c){ return c.id === v.cli; })[0] || {}).nombre || '';
     setMsg('Venta registrada: ' + money(total) + ' ' + (v.forma === 'credito' ? 'a crédito' : 'de contado') + ' · ' + cn +
@@ -1110,49 +1212,106 @@ A.saveSA = async function(){
   S.busy = false; render();
 };
 
+/* ---------- Acciones: precios especiales por cliente (administrador) ---------- */
+A.nuevoSP = function(){ S.sp = {prod:'', pres:'', precio:''}; S.msg = ''; S.err = ''; render(); };
+A.cancelSP = function(){ S.sp = null; S.err = ''; render(); };
+A.spF = function(k, v){ S.sp[k] = v; };
+A.spProd = function(v){ S.sp.prod = v; S.sp.pres = ''; render(); };
+A.spPres = function(k){ S.sp.pres = k; render(); };
+A.saveSP = async function(){
+  if (S.busy) return;
+  var c = S.ce, sp = S.sp;
+  if (!c || !c.id || !sp) return;
+  var pr = S.productos.filter(function(q){ return q.activo && presDe(q).length; });
+  var p = pr.filter(function(q){ return q.id === sp.prod; })[0] || pr[0];
+  if (!p) { setErr('Elige un producto.'); render(); return; }
+  var av = presDe(p), pres = av.indexOf(sp.pres) >= 0 ? sp.pres : av[0];
+  var v = num(sp.precio);
+  if (!(v >= 0)) { setErr('Escribe el precio especial.'); render(); return; }
+  v = Math.round(v * 100) / 100;
+  var ex = espDe(c.id, p.id, pres);
+  S.busy = true; render();
+  try {
+    var r = ex
+      ? await db.from('precios_cliente').update({precio:v}).eq('id', ex.id)
+      : await db.from('precios_cliente').insert({cliente_id:c.id, producto_id:p.id, presentacion:pres, precio:v});
+    if (r.error) throw r.error;
+    await cargarPrecios();
+    S.sp = null; setMsg('Precio especial guardado: ' + p.nombre + ' · ' + presLab(pres) + ' ' + money(v));
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
+};
+A.delSP = async function(id){
+  if (S.busy) return;
+  if (!window.confirm('¿Quitar este precio especial? El cliente volverá a pagar el precio de lista.')) return;
+  S.busy = true; render();
+  try {
+    var r = await db.from('precios_cliente').delete().eq('id', id);
+    if (r.error) throw r.error;
+    await cargarPrecios();
+    setMsg('Precio especial quitado.');
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
+};
+
 /* ---------- Acciones: Más (administrador) ---------- */
 A.mas = async function(x){
-  S.mas = x; S.ce = null; S.pe = null; S.pf = null; S.pve = null; S.msg = ''; S.err = ''; render();
+  S.mas = x; S.ce = null; S.pe = null; S.pf = null; S.pve = null; S.sp = null; S.msg = ''; S.err = ''; render();
   if (x === 'usuarios') { try { await cargarPerfiles(); } catch (e) { setErr(errTxt(e)); } render(); }
   if (x === 'auditoria') { try { await cargarPerfiles(); } catch (e) {} cargarAud(); }
 };
 A.audF = function(v){ S.aud.filtro = v; cargarAud(); };
 
-A.nuevoC = function(){ S.ce = {id:null, nombre:'', telefono:'', activo:true}; S.msg = ''; S.err = ''; render(); };
+A.nuevoC = function(){ S.ce = {id:null, nombre:'', telefono:'', activo:true, tipo:'particular'}; S.sp = null; S.msg = ''; S.err = ''; render(); };
 A.editC = function(id){
   var c = S.clientes.filter(function(x){ return x.id === id; })[0]; if (!c) return;
-  S.ce = {id:c.id, nombre:c.nombre, telefono:c.telefono || '', activo:c.activo}; S.msg = ''; S.err = ''; render();
+  S.ce = {id:c.id, nombre:c.nombre, telefono:c.telefono || '', activo:c.activo, tipo:c.tipo === 'restaurante' ? 'restaurante' : 'particular'}; S.sp = null; S.msg = ''; S.err = ''; render();
 };
-A.cancelC = function(){ S.ce = null; render(); };
+A.cancelC = function(){ S.ce = null; S.sp = null; render(); };
+A.ceTipo = function(t){ S.ce.tipo = t; render(); };
+A.tfC = function(t){
+  var o = t === 'restaurante' ? 'particular' : 'restaurante';
+  if (S.cf[t] && !S.cf[o]) return;
+  S.cf[t] = !S.cf[t]; render();
+};
 A.ce = function(k, v){ S.ce[k] = v; };
 A.saveC = async function(){
   if (S.busy) return;
   var c = S.ce, n = (c.nombre || '').trim();
   if (!n) { setErr('Escribe el nombre del cliente.'); render(); return; }
-  var row = {nombre:n, telefono:(c.telefono || '').trim() || null, activo:!!c.activo};
+  var row = {nombre:n, telefono:(c.telefono || '').trim() || null, activo:!!c.activo, tipo:c.tipo === 'restaurante' ? 'restaurante' : 'particular'};
   S.busy = true; render();
   try {
     var r = c.id ? await db.from('clientes').update(row).eq('id', c.id) : await db.from('clientes').insert(row);
     if (r.error) throw r.error;
     await cargarCatalogos();
-    S.ce = null; setMsg('Cliente guardado: ' + n);
+    S.cf[row.tipo] = true;
+    S.ce = null; S.sp = null; setMsg('Cliente guardado: ' + n);
   } catch (e) { setErr(errTxt(e)); }
   S.busy = false; render();
 };
 
-A.nuevoP = function(){ S.pe = {id:null, nombre:'', precio:'', activo:true}; S.msg = ''; S.err = ''; render(); };
+A.nuevoP = function(){ S.pe = {id:null, nombre:'', pe:'', pr:'', pf:'', activo:true}; S.msg = ''; S.err = ''; render(); };
 A.editP = function(id){
   var p = S.productos.filter(function(x){ return x.id === id; })[0]; if (!p) return;
-  S.pe = {id:p.id, nombre:p.nombre, precio:String(p.precio_kg), activo:p.activo}; S.msg = ''; S.err = ''; render();
+  function t(v){ return (v === null || v === undefined) ? '' : String(+v); }
+  S.pe = {id:p.id, nombre:p.nombre, pe:t(p.precio_entero), pr:t(p.precio_ruedas), pf:t(p.precio_filete), activo:p.activo}; S.msg = ''; S.err = ''; render();
 };
 A.cancelP = function(){ S.pe = null; render(); };
 A.pe = function(k, v){ S.pe[k] = v; };
 A.saveP = async function(){
   if (S.busy) return;
-  var p = S.pe, n = (p.nombre || '').trim(), pr = num(p.precio);
+  var p = S.pe, n = (p.nombre || '').trim(), row = {nombre:n, activo:!!p.activo}, malo = false, alguno = false;
   if (!n) { setErr('Escribe el nombre del producto.'); render(); return; }
-  if (!(pr >= 0)) { setErr('Escribe el precio por kilo.'); render(); return; }
-  var row = {nombre:n, precio_kg:Math.round(pr * 100) / 100, activo:!!p.activo};
+  [['pe','precio_entero'], ['pr','precio_ruedas'], ['pf','precio_filete']].forEach(function(x){
+    var raw = String(p[x[0]] || '').trim();
+    if (raw === '') { row[x[1]] = null; return; }
+    var v = num(raw);
+    if (isNaN(v) || v < 0) { malo = true; return; }
+    row[x[1]] = Math.round(v * 100) / 100; alguno = true;
+  });
+  if (malo) { setErr('Revisa los precios: solo números, sin signos.'); render(); return; }
+  if (!alguno) { setErr('Escribe al menos un precio.'); render(); return; }
   S.busy = true; render();
   try {
     var r = p.id ? await db.from('productos').update(row).eq('id', p.id) : await db.from('productos').insert(row);
