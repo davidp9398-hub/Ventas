@@ -95,7 +95,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 /* ---------- Conexión (claves públicas; la seguridad la dan los roles de la base de datos) ---------- */
 var SUPABASE_URL = 'https://gkhomooeuogtwhasdyuo.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_6vB64x8E8iTsOIKfXsmzOg_yh2Gg0sU';
-var VERSION = '4.1';
+var VERSION = '5';
 
 var app = document.getElementById('app');
 if (!window.supabase) {
@@ -194,6 +194,7 @@ var S = {
   rep:{per:'sem', ref:'', rk:null, datos:null},
   sa:null,
   precios:[], cf:{restaurante:true, particular:true}, sp:null,
+  q:[], off:false, syncP:null, rerun:false,
   aud:{filtro:'', lista:null}
 };
 
@@ -202,6 +203,144 @@ function nameOf(id){
   var p = S.perfMap[id];
   if (p) return p.nombre || p.correo || 'Usuario';
   return (S.user && id === S.user.id) ? S.nombre : 'Usuario';
+}
+
+/* ---------- Modo sin conexión: cola de registros pendientes ---------- */
+function lsGet(k){ try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }
+function uuid(){
+  if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+  var b = new Uint8Array(16); window.crypto.getRandomValues(b);
+  b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+  var h = Array.prototype.map.call(b, function(x){ return ('0' + x.toString(16)).slice(-2); }).join('');
+  return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+}
+function esRed(e){
+  var m = (e && e.message) || String(e || '');
+  return navigator.onLine === false || /Failed to fetch|NetworkError|Load failed|network|tiempo agotado|fetch|JWT|expired/i.test(m);
+}
+function dup(e){ return !!e && (e.code === '23505' || /duplicate key/i.test(e.message || '')); }
+function conTiempo(p, ms){
+  return new Promise(function(res, rej){
+    var t = setTimeout(function(){ rej(new Error('Failed to fetch (tiempo agotado)')); }, ms || 20000);
+    p.then(function(v){ clearTimeout(t); res(v); }, function(e){ clearTimeout(t); rej(e); });
+  });
+}
+function qKey(){ return 'cola_' + (S.user ? S.user.id : 'x'); }
+function qLoad(){ S.q = (S.user && lsGet(qKey())) || []; }
+function qSave(){ return lsSet(qKey(), S.q); }
+function enqueue(tipo, payload){
+  var j = {id:uuid(), tipo:tipo, payload:payload, ts:new Date().toISOString(), est:'pend', err:'', n:0};
+  S.q.push(j);
+  if (!qSave()) { S.q.pop(); return null; }
+  return j;
+}
+function cacheCat(){
+  if (!S.user) return;
+  lsSet('cat_' + S.user.id, {t:Date.now(), clientes:S.clientes, productos:S.productos, precios:S.precios, proveedores:S.proveedores});
+}
+
+async function correr(j){
+  var p = j.payload, r;
+  if (j.tipo === 'venta') {
+    r = await conTiempo(db.from('ventas').insert(p.venta), 20000);
+    if (r.error && !dup(r.error)) throw r.error;
+    r = await conTiempo(db.from('venta_items').insert(p.items), 20000);
+    if (r.error && !dup(r.error)) throw r.error;
+    return;
+  }
+  if (j.tipo === 'mostrador') {
+    var sel = await conTiempo(db.from('cierres_mostrador').select('id').eq('fecha', p.fecha).maybeSingle(), 20000);
+    if (sel.error) throw sel.error;
+    if (sel.data) {
+      r = await conTiempo(db.from('cierres_mostrador').update(p.vals).eq('id', sel.data.id).select('id'), 20000);
+      if (r.error) throw r.error;
+      if (!r.data || !r.data.length) throw new Error('No tienes permiso para corregir ese registro.');
+    } else {
+      var row = {fecha:p.fecha}; Object.keys(p.vals).forEach(function(k){ row[k] = p.vals[k]; });
+      r = await conTiempo(db.from('cierres_mostrador').insert(row), 20000);
+      if (r.error) {
+        if (r.error.code === '23505') throw new Error('Ese día ya tiene un total registrado por otra persona. Pídele al administrador que lo corrija.');
+        throw r.error;
+      }
+    }
+    return;
+  }
+  throw new Error('Tipo de registro desconocido.');
+}
+
+async function pasada(){
+  var cambio = false;
+  for (var i = 0; i < S.q.length; i++) {
+    var j = S.q[i];
+    if (j.est === 'error') continue;
+    try {
+      await correr(j);
+      S.q.splice(i, 1); i--; qSave(); cambio = true;
+    } catch (e) {
+      j.n = (j.n || 0) + 1;
+      if (esRed(e)) { qSave(); break; }
+      j.est = 'error'; j.err = errTxt(e); qSave(); cambio = true;
+    }
+  }
+  if (cambio) { S.ini = null; S.saldos = null; if (S.user) render(); }
+}
+
+function sync(){
+  if (!S.user) return Promise.resolve();
+  if (S.syncP) { S.rerun = true; return S.syncP; }
+  S.syncP = (async function(){
+    do { S.rerun = false; await pasada(); } while (S.rerun);
+  })().then(function(){ S.syncP = null; }, function(){ S.syncP = null; });
+  return S.syncP;
+}
+
+function estadoBar(){
+  var n = S.q.filter(function(j){ return j.est !== 'error'; }).length, e = S.q.length - n;
+  if (navigator.onLine === false) {
+    return '<div class="wn">Sin conexión. Puedes seguir registrando ventas y el total de mostrador: se enviarán cuando vuelva el internet.' +
+      (S.q.length ? ' <a href="#" style="color:inherit;font-weight:600" onclick="A.go(\'cola\');return false">Pendientes: '+S.q.length+'</a>' : '') + '</div>';
+  }
+  if (S.q.length) {
+    return '<div class="wn" style="cursor:pointer" onclick="A.go(\'cola\')">' + (n ? n + (n === 1 ? ' registro pendiente de enviar' : ' registros pendientes de enviar') : '') +
+      (n && e ? ' · ' : '') + (e ? e + (e === 1 ? ' con error' : ' con error') : '') + '. Toca para ver.</div>';
+  }
+  return '';
+}
+
+function vSinRed(){
+  return '<div class="lbl" style="padding:32px 0 16px;text-align:center">Esta sección necesita conexión a internet.<br>Mientras tanto puedes registrar ventas y el total de mostrador.</div>' +
+    '<button class="pri" style="width:100%" onclick="A.go(\'venta\')">Ir a Venta</button>';
+}
+
+function tituloJob(j){
+  var p = j.payload;
+  if (j.tipo === 'venta') return 'Venta ' + money(p.venta.total) + ' · ' + esc(p.cli || 'cliente');
+  if (j.tipo === 'mostrador') return 'Total de mostrador ' + money(p.total) + ' · ' + fdate(p.fecha);
+  return 'Registro';
+}
+
+function vCola(){
+  var h = '<button onclick="A.volverCola()" style="margin-bottom:10px;display:inline-flex;align-items:center;gap:4px">'+ic('back',18)+' Volver</button>' + banner();
+  if (!S.q.length) return h + '<div class="lbl" style="padding:24px 0;text-align:center">No hay nada pendiente. Todo está enviado.</div>';
+  h += '<div class="sub" style="margin-bottom:8px">Estos registros están guardados en este teléfono y todavía no llegan al sistema.</div>';
+  h += '<button class="pri" style="width:100%;margin-bottom:6px" onclick="A.enviarAhora()">Enviar ahora</button>';
+  h += S.q.map(function(j, i){
+    return '<div class="row"><span>' + tituloJob(j) + '<div class="sub">' + esc(dtime(j.ts)) + ' · ' +
+      (j.est === 'error' ? '<span class="bad">No se pudo enviar: ' + esc(j.err) + '</span>' : (navigator.onLine === false ? 'Esperando conexión' : 'Pendiente')) + '</div></span>' +
+      '<span class="r"><button onclick="A.descartar(' + i + ')">Descartar</button></span></div>';
+  }).join('');
+  return h;
+}
+
+function entrarSinConexion(u){
+  var c = lsGet('cat_' + u.id) || {};
+  S.user = {id:u.id, email:u.email}; S.rol = u.rol; S.nombre = u.nombre || u.email;
+  S.clientes = c.clientes || []; S.productos = c.productos || []; S.precios = c.precios || []; S.proveedores = c.proveedores || [];
+  S.perfiles = []; S.perfMap = {};
+  S.tab = 'venta'; S.vm = 'cli'; S.mo.fecha = hoy(); S.rep.ref = hoy(); S.rep.datos = null;
+  S.off = true; S.boot = false; S.busy = false; S.err = ''; S.msg = '';
+  qLoad(); render(); sync();
 }
 
 /* ---------- Vistas ---------- */
@@ -218,7 +357,7 @@ function vLogin(){
 }
 
 function vHead(){
-  var t = {inicio:'Inicio', venta:(S.vm === 'mos' ? 'Total de mostrador' : 'Venta a cliente'), cobrar:'Cuentas por cobrar', pagar:'Cuentas por pagar', reporte:(S.rep.per === 'sem' ? 'Reporte semanal' : 'Reporte mensual'), mas:'Más'}[S.tab];
+  var t = {inicio:'Inicio', venta:(S.vm === 'mos' ? 'Total de mostrador' : 'Venta a cliente'), cobrar:'Cuentas por cobrar', pagar:'Cuentas por pagar', reporte:(S.rep.per === 'sem' ? 'Reporte semanal' : 'Reporte mensual'), mas:'Más', cola:'Pendientes de enviar'}[S.tab];
   if (S.tab === 'cobrar' && S.hist) t = S.hist.nombre;
   if (S.tab === 'pagar' && S.pagar.hist) t = S.pagar.hist.nombre;
   if (S.tab === 'mas') t = {menu:'Más', clientes:'Clientes', proveedores:'Proveedores', productos:'Productos', usuarios:'Usuarios', auditoria:'Registro de cambios'}[S.mas] || 'Más';
@@ -307,6 +446,7 @@ function vMostrador(){
     return '<div class="row"><span>'+p[1]+'</span><input type="text" inputmode="decimal" placeholder="0.00" value="'+esc(m.v[p[0]])+'" oninput="A.upM(\''+p[0]+'\',this.value)" aria-label="'+p[1]+'" style="width:120px"></div>';
   }).join('');
   h += '<div class="row" style="font-weight:600"><span>Total del día</span><span id="mt">'+money(totM())+'</span></div>';
+  if (m.sinRed) h += '<div class="sub" style="margin:6px 0">Sin conexión: no se puede ver lo ya registrado. Lo que guardes se enviará después y reemplazará el total de ese día.</div>';
   if (m.existe) h += '<div class="sub" style="margin:6px 0">Ya hay '+money(m.existe.total)+' registrado para este día'+(adm ? ' por '+esc(nameOf(m.existe.creado_por)) : '')+'. Se reemplazará al guardar.</div>';
   h += '<button class="pri" style="width:100%;margin-top:8px"'+(S.busy ? ' disabled' : '')+' onclick="A.saveM()">'+(S.busy ? 'Guardando…' : (m.existe ? 'Actualizar total del día' : 'Guardar total del día'))+'</button>';
   if (adm) {
@@ -656,8 +796,11 @@ function render(){
       '<main>'+banner()+'<div class="wn">Tu usuario todavía no tiene un perfil asignado. Avísale al administrador.</div></main>';
     return;
   }
-  var body = {inicio:vInicio, venta:vVenta, cobrar:vCobrar, pagar:vPagar, reporte:vReporte, mas:vMas}[S.tab]();
-  app.innerHTML = vHead() + '<main>' + body + '</main>' + vNav();
+  var sinRed = navigator.onLine === false, body;
+  if (S.tab === 'cola') body = vCola();
+  else if (sinRed && ['inicio', 'cobrar', 'pagar', 'reporte', 'mas'].indexOf(S.tab) >= 0) body = vSinRed();
+  else body = {inicio:vInicio, venta:vVenta, cobrar:vCobrar, pagar:vPagar, reporte:vReporte, mas:vMas}[S.tab]();
+  app.innerHTML = vHead() + '<main>' + (S.tab === 'cola' ? '' : estadoBar()) + body + '</main>' + vNav();
 }
 
 /* ---------- Carga de datos ---------- */
@@ -676,6 +819,7 @@ async function cargarCatalogos(){
     if (rp.error) throw rp.error;
     S.proveedores = rp.data;
   }
+  cacheCat();
 }
 
 async function cargarPerfiles(){
@@ -688,10 +832,11 @@ async function cargarPerfiles(){
 async function cargarTodo(){
   S.boot = true; render();
   try {
-    var p = await db.from('perfiles').select('rol,nombre,activo').eq('id', S.user.id).maybeSingle();
+    var p = await conTiempo(db.from('perfiles').select('rol,nombre,activo').eq('id', S.user.id).maybeSingle(), 15000);
     if (p.error) throw p.error;
     if (p.data && p.data.activo === false) {
       try { await db.auth.signOut(); } catch (x) {}
+      try { localStorage.removeItem('ult_usuario'); } catch (x) {}
       S.user = null; S.rol = null; S.boot = false; S.busy = false;
       setErr('Tu usuario está desactivado. Habla con el administrador.');
       render(); return;
@@ -701,10 +846,17 @@ async function cargarTodo(){
     if (S.rol) { await cargarCatalogos(); await cargarPerfiles(); }
     S.tab = S.rol === 'admin' ? 'inicio' : 'venta';
     S.vm = 'cli'; S.mo.fecha = hoy(); S.rep.ref = hoy(); S.rep.datos = null;
-    S.err = ''; S.msg = '';
-  } catch (e) { setErr(errTxt(e)); }
+    S.err = ''; S.msg = ''; S.off = false;
+    if (S.rol) lsSet('ult_usuario', {id:S.user.id, email:S.user.email, rol:S.rol, nombre:S.nombre});
+  } catch (e) {
+    var u = lsGet('ult_usuario');
+    if (esRed(e) && u && S.user && u.id === S.user.id) { entrarSinConexion(u); return; }
+    setErr(errTxt(e));
+  }
+  qLoad();
   S.boot = false; S.busy = false; render();
   if (S.rol === 'admin') cargarInicio();
+  sync();
 }
 
 async function cargarInicio(){
@@ -743,6 +895,7 @@ async function cargarPrecios(){
   var r = await db.from('precios_cliente').select('id,cliente_id,producto_id,presentacion,precio');
   if (r.error) throw r.error;
   S.precios = r.data;
+  cacheCat();
 }
 
 async function cargarSaldosP(){
@@ -815,7 +968,7 @@ async function cargarReporte(){
 
 async function cargarMostrador(f){
   var m = S.mo;
-  f = f || m.fecha || hoy(); m.fecha = f; m.cargando = true;
+  f = f || m.fecha || hoy(); m.fecha = f; m.cargando = true; m.sinRed = false;
   try {
     var cols = 'id,fecha,efectivo,punto_venta_1,punto_venta_2,pago_movil,total,creado_por';
     var q = [db.from('cierres_mostrador').select(cols).eq('fecha', f).maybeSingle()];
@@ -825,7 +978,7 @@ async function cargarMostrador(f){
     m.existe = r[0].data || null;
     FP.forEach(function(p){ var v = m.existe ? +m.existe[p[0]] : 0; m.v[p[0]] = v > 0 ? String(v) : ''; });
     if (r[1]) m.lista = r[1].data;
-  } catch (e) { setErr(errTxt(e)); }
+  } catch (e) { if (esRed(e)) { m.existe = null; m.lista = []; m.sinRed = true; } else { setErr(errTxt(e)); } }
   m.cargando = false;
   if (S.tab === 'venta' && S.vm === 'mos') render();
 }
@@ -860,11 +1013,17 @@ A.login = async function(ev){
 };
 
 A.salir = async function(){
-  try { await db.auth.signOut(); } catch (e) {}
+  if (S.q.length && !window.confirm('Hay ' + S.q.length + ' registro(s) sin enviar. Se enviarán cuando vuelvas a iniciar sesión con internet. ¿Cerrar sesión?')) return;
+  try { await db.auth.signOut({scope:'local'}); } catch (e) {}
+  try {
+    if (S.user) localStorage.removeItem('cat_' + S.user.id);
+    localStorage.removeItem('ult_usuario');
+    Object.keys(localStorage).forEach(function(k){ if (/^sb-.*-auth-token/.test(k)) localStorage.removeItem(k); });
+  } catch (e) {}
   S.user = null; S.rol = null; S.nombre = ''; S.ini = null; S.saldos = null; S.hist = null; S.perfiles = []; S.perfMap = {};
   S.proveedores = []; S.pagar = {saldos:null, hist:null, compra:null}; S.rep.datos = null; S.sa = null;
   S.v = {cli:'', prod:'', kilos:'1', lineas:[], forma:'contado'};
-  S.msg = ''; S.err = ''; S.busy = false;
+  S.msg = ''; S.err = ''; S.busy = false; S.off = false; S.q = [];
   render();
 };
 
@@ -872,6 +1031,7 @@ A.go = function(t){
   S.tab = t; S.msg = ''; S.err = ''; S.hist = null; S.mas = 'menu'; S.ce = null; S.pe = null; S.pf = null; S.pve = null;
   S.pagar.hist = null; S.pagar.compra = null; S.sa = null; S.sp = null;
   render();
+  if (navigator.onLine === false) return;
   if (t === 'inicio') cargarInicio();
   if (t === 'cobrar') cargarSaldos();
   if (t === 'pagar') cargarSaldosP();
@@ -915,26 +1075,18 @@ A.saveM = async function(){
   var total = vals.efectivo + vals.punto_venta_1 + vals.punto_venta_2 + vals.pago_movil;
   if (!(total > 0)) { setErr('Escribe al menos un monto mayor que cero.'); render(); return; }
   S.busy = true; render();
-  try {
-    var sel = await db.from('cierres_mostrador').select('id').eq('fecha', f).maybeSingle();
-    if (sel.error) throw sel.error;
-    var r;
-    if (sel.data) {
-      r = await db.from('cierres_mostrador').update(vals).eq('id', sel.data.id).select('id');
-      if (r.error) throw r.error;
-      if (!r.data || !r.data.length) throw new Error('No tienes permiso para corregir ese registro.');
-    } else {
-      var row = {fecha:f}; Object.keys(vals).forEach(function(k){ row[k] = vals[k]; });
-      r = await db.from('cierres_mostrador').insert(row);
-      if (r.error) {
-        if (r.error.code === '23505') throw new Error('Ese día ya tiene un total registrado por otra persona. Pídele al administrador que lo corrija.');
-        throw r.error;
-      }
-    }
+  var j = enqueue('mostrador', {fecha:f, vals:vals, total:Math.round(total * 100) / 100});
+  if (!j) { S.busy = false; setErr('No se pudo guardar en este teléfono. Libera espacio e inténtalo de nuevo.'); render(); return; }
+  await sync();
+  if (S.q.indexOf(j) < 0) {
     setMsg('Total del ' + fdate(f) + ' guardado: ' + money(total));
     S.ini = null;
-    await cargarMostrador(f);
-  } catch (e) { setErr(errTxt(e)); }
+    if (navigator.onLine !== false) await cargarMostrador(f);
+  } else if (j.est === 'error') {
+    setErr('No se pudo enviar el total: ' + j.err + ' Revísalo en Pendientes.');
+  } else {
+    setMsg('Total del ' + fdate(f) + ' guardado en el teléfono: ' + money(total) + '. Se enviará cuando vuelva el internet.');
+  }
   S.busy = false; render();
 };
 
@@ -973,18 +1125,19 @@ A.reg = async function(){
   if (!v.lineas.length) { setErr('Agrega al menos un producto con el botón +.'); render(); return; }
   var total = lineasTotal();
   if (!(total > 0)) { setErr('El total debe ser mayor que cero.'); render(); return; }
+  var vid = uuid(), cn = (S.clientes.filter(function(c){ return c.id === v.cli; })[0] || {}).nombre || '';
+  var venta = {id:vid, cliente_id:v.cli, forma:v.forma, total:total, fecha:hoy(), creado_en:new Date().toISOString()};
+  var items = v.lineas.map(function(l){ return {id:uuid(), venta_id:vid, producto_id:l.producto_id, presentacion:l.pres, kilos:l.kilos, precio_kg:l.precio}; });
   S.busy = true; render();
-  try {
-    var r = await db.from('ventas').insert({cliente_id:v.cli, forma:v.forma, total:total}).select('id').single();
-    if (r.error) throw r.error;
-    var items = v.lineas.map(function(l){ return {venta_id:r.data.id, producto_id:l.producto_id, presentacion:l.pres, kilos:l.kilos, precio_kg:l.precio}; });
-    var r2 = await db.from('venta_items').insert(items);
-    var cn = (S.clientes.filter(function(c){ return c.id === v.cli; })[0] || {}).nombre || '';
-    setMsg('Venta registrada: ' + money(total) + ' ' + (v.forma === 'credito' ? 'a crédito' : 'de contado') + ' · ' + cn +
-      (r2.error ? '. Ojo: el total se guardó, pero no el detalle de productos.' : ''));
-    S.v.lineas = []; S.v.cli = ''; S.v.forma = 'contado'; S.v.kilos = '1';
-    S.ini = null; S.saldos = null;
-  } catch (e) { setErr(errTxt(e)); }
+  var j = enqueue('venta', {venta:venta, items:items, cli:cn});
+  if (!j) { S.busy = false; setErr('No se pudo guardar en este teléfono. Libera espacio e inténtalo de nuevo.'); render(); return; }
+  var forma = v.forma === 'credito' ? 'a crédito' : 'de contado';
+  S.v.lineas = []; S.v.cli = ''; S.v.forma = 'contado'; S.v.kilos = '1';
+  S.ini = null; S.saldos = null;
+  await sync();
+  if (S.q.indexOf(j) < 0) setMsg('Venta registrada: ' + money(total) + ' ' + forma + ' · ' + cn);
+  else if (j.est === 'error') setErr('La venta de ' + money(total) + ' a ' + cn + ' no se pudo enviar: ' + j.err + ' Revísala en Pendientes.');
+  else setMsg('Venta guardada en el teléfono: ' + money(total) + ' ' + forma + ' · ' + cn + '. Se enviará cuando vuelva el internet.');
   S.busy = false; render();
 };
 
@@ -1254,6 +1407,35 @@ A.delSP = async function(id){
   S.busy = false; render();
 };
 
+/* ---------- Acciones: cola y reconexión ---------- */
+A.volverCola = function(){ A.go(S.rol === 'admin' ? 'inicio' : 'venta'); };
+A.enviarAhora = async function(){
+  S.q.forEach(function(j){ if (j.est === 'error') { j.est = 'pend'; j.err = ''; } });
+  qSave(); S.msg = ''; S.err = ''; render();
+  await sync();
+  if (!S.q.length) setMsg('Todo se envió correctamente.');
+  else if (navigator.onLine === false) setErr('Todavía no hay conexión a internet.');
+  render();
+};
+A.descartar = function(i){
+  var j = S.q[i]; if (!j) return;
+  if (!window.confirm('¿Descartar este registro? No se enviará y no se podrá recuperar.')) return;
+  S.q.splice(i, 1); qSave(); render();
+};
+A.reconectar = async function(){
+  try {
+    var r = await db.auth.getSession();
+    if (r.data && r.data.session) {
+      S.user = r.data.session.user; S.off = false;
+      await cargarCatalogos();
+      if (S.rol === 'admin') await cargarPerfiles();
+    } else if (r.error && esRed(r.error)) { return; }
+    else { S.user = null; S.rol = null; S.off = false; render(); return; }
+  } catch (e) { return; }
+  render(); sync();
+  if (S.rol === 'admin' && ['inicio', 'cobrar', 'pagar', 'reporte'].indexOf(S.tab) >= 0) A.go(S.tab);
+};
+
 /* ---------- Acciones: Más (administrador) ---------- */
 A.mas = async function(x){
   S.mas = x; S.ce = null; S.pe = null; S.pf = null; S.pve = null; S.sp = null; S.msg = ''; S.err = ''; render();
@@ -1370,14 +1552,34 @@ A.saveU = async function(){
 
 /* ---------- Arranque ---------- */
 db.auth.onAuthStateChange(function(ev){
-  if (ev === 'SIGNED_OUT' && S.user) { S.user = null; S.rol = null; render(); }
+  if (ev === 'SIGNED_OUT' && S.user && !S.off) { S.user = null; S.rol = null; render(); }
 });
+window.addEventListener('online', function(){
+  if (S.off) { A.reconectar(); return; }
+  if (S.user && S.rol === 'admin' && ['inicio', 'cobrar', 'pagar', 'reporte'].indexOf(S.tab) >= 0) { A.go(S.tab); } else { render(); }
+  sync();
+});
+window.addEventListener('offline', function(){ if (S.user) render(); });
+document.addEventListener('visibilitychange', function(){
+  if (document.hidden || !S.user) return;
+  if (S.off && navigator.onLine !== false) A.reconectar(); else sync();
+});
+setInterval(function(){ if (S.user && S.q.length) sync(); }, 30000);
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); });
+}
 
 (async function(){
   try {
     var r = await db.auth.getSession();
     if (r.data && r.data.session) { S.user = r.data.session.user; await cargarTodo(); return; }
-  } catch (e) { setErr(errTxt(e)); }
+    var u = lsGet('ult_usuario');
+    if (u && ((r.error && esRed(r.error)) || navigator.onLine === false)) { entrarSinConexion(u); return; }
+  } catch (e) {
+    var u2 = lsGet('ult_usuario');
+    if (u2 && esRed(e)) { entrarSinConexion(u2); return; }
+    setErr(errTxt(e));
+  }
   S.boot = false; render();
 })();
 
