@@ -95,7 +95,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 /* ---------- Conexión (claves públicas; la seguridad la dan los roles de la base de datos) ---------- */
 var SUPABASE_URL = 'https://gkhomooeuogtwhasdyuo.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_6vB64x8E8iTsOIKfXsmzOg_yh2Gg0sU';
-var VERSION = '5';
+var VERSION = '5.1';
 
 var app = document.getElementById('app');
 if (!window.supabase) {
@@ -195,6 +195,7 @@ var S = {
   sa:null,
   precios:[], cf:{restaurante:true, particular:true}, sp:null,
   q:[], off:false, syncP:null, rerun:false,
+  rs:{busy:false, prog:'', res:null},
   aud:{filtro:'', lista:null}
 };
 
@@ -360,7 +361,7 @@ function vHead(){
   var t = {inicio:'Inicio', venta:(S.vm === 'mos' ? 'Total de mostrador' : 'Venta a cliente'), cobrar:'Cuentas por cobrar', pagar:'Cuentas por pagar', reporte:(S.rep.per === 'sem' ? 'Reporte semanal' : 'Reporte mensual'), mas:'Más', cola:'Pendientes de enviar'}[S.tab];
   if (S.tab === 'cobrar' && S.hist) t = S.hist.nombre;
   if (S.tab === 'pagar' && S.pagar.hist) t = S.pagar.hist.nombre;
-  if (S.tab === 'mas') t = {menu:'Más', clientes:'Clientes', proveedores:'Proveedores', productos:'Productos', usuarios:'Usuarios', auditoria:'Registro de cambios'}[S.mas] || 'Más';
+  if (S.tab === 'mas') t = {menu:'Más', clientes:'Clientes', proveedores:'Proveedores', productos:'Productos', usuarios:'Usuarios', auditoria:'Registro de cambios', respaldo:'Respaldo de datos'}[S.mas] || 'Más';
   return '<header><div><b>'+esc(t)+'</b><div class="lbl">'+esc(S.nombre)+' · '+(S.rol === 'admin' ? 'Administrador' : 'Empleado')+'</div></div>' +
     '<button class="ib" onclick="A.salir()" aria-label="Cerrar sesión">'+ic('out')+'</button></header>';
 }
@@ -377,6 +378,8 @@ function vInicio(){
   if (!S.ini) return banner() + '<div class="lbl">Cargando…</div>';
   var i = S.ini, h = banner();
   if (!i.hayMos) h += '<div class="wn" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>Falta el total de mostrador de hoy</span><button onclick="A.irMostrador()">Registrar</button></div>';
+  var ur = lsGet('ult_respaldo'), dr = ur ? Math.floor((ref2t(hoy()) - ref2t(ur.fecha)) / 864e5) : null;
+  if (!ur || dr > 7) h += '<div class="wn" style="cursor:pointer" onclick="A.irRespaldo()">' + (ur ? 'Hace ' + dr + ' días que no haces un respaldo.' : 'Todavía no has hecho ningún respaldo.') + ' Toca para hacerlo.</div>';
   h += '<div class="g"><div class="m"><div class="lbl">Ventas hoy</div><div class="big">'+money(i.vh)+'</div></div>' +
     '<div class="m"><div class="lbl">Cobrado hoy</div><div class="big">'+money(i.ch)+'</div></div>' +
     '<div class="m"><div class="lbl">Por cobrar</div><div class="big warnc">'+money(i.pc)+'</div></div>' +
@@ -514,13 +517,13 @@ function vHist(){
 function vMas(){
   var h = banner();
   if (S.mas === 'menu') {
-    var it = [['clientes','Clientes'], ['proveedores','Proveedores'], ['productos','Productos y precios'], ['usuarios','Usuarios'], ['auditoria','Registro de cambios']];
+    var it = [['clientes','Clientes'], ['proveedores','Proveedores'], ['productos','Productos y precios'], ['usuarios','Usuarios'], ['auditoria','Registro de cambios'], ['respaldo','Respaldo de datos']];
     return h + it.map(function(x){
       return '<div class="row tap" onclick="A.mas(\''+x[0]+'\')"><span>'+x[1]+'</span>'+ic('next')+'</div>';
     }).join('') + '<div class="lbl" style="margin-top:16px">Versión '+VERSION+'</div>';
   }
   var back = '<button onclick="A.mas(\'menu\')" style="margin-bottom:10px;display:inline-flex;align-items:center;gap:4px">'+ic('back',18)+' Volver</button>';
-  var body = {clientes:vClientes, proveedores:vProveedores, productos:vProductos, usuarios:vUsuarios, auditoria:vAuditoria}[S.mas]();
+  var body = {clientes:vClientes, proveedores:vProveedores, productos:vProductos, usuarios:vUsuarios, auditoria:vAuditoria, respaldo:vRespaldo}[S.mas]();
   return back + h + body;
 }
 
@@ -676,6 +679,20 @@ function vProveedores(){
   h += S.proveedores.map(function(x){
     return '<div class="row tap" onclick="A.editV(\''+x.id+'\')"><span>'+esc(x.nombre)+'<div class="sub">'+esc(x.telefono || 'Sin teléfono')+(x.activo ? '' : ' · Inactivo')+'</div></span>'+ic('next')+'</div>';
   }).join('');
+  return h;
+}
+
+var TABLAS_RESPALDO = ['clientes', 'proveedores', 'productos', 'precios_cliente', 'ventas', 'venta_items', 'abonos', 'cierres_mostrador', 'compras_proveedor', 'pagos_proveedor', 'perfiles', 'auditoria'];
+
+function vRespaldo(){
+  var R = S.rs, ult = lsGet('ult_respaldo'), h = '';
+  h += '<div class="sub" style="margin-bottom:10px">Crea un archivo con todos tus datos: ventas, abonos, totales de mostrador, clientes, productos, precios, proveedores, compras, pagos y registro de cambios. Guárdalo en Archivos o envíalo a tu correo o WhatsApp.</div>';
+  h += '<div class="m" style="margin-bottom:10px"><div class="lbl">Último respaldo hecho desde este teléfono</div><div style="font-weight:600">' +
+    (ult ? esc(fdate(ult.fecha)) + ' · ' + ult.filas + ' filas' : 'Todavía no has hecho ninguno') + '</div></div>';
+  h += '<button class="pri" style="width:100%"' + (R.busy ? ' disabled' : '') + ' onclick="A.respaldo()">' + (R.busy ? 'Creando respaldo…' : 'Crear y guardar respaldo') + '</button>';
+  if (R.prog) h += '<div class="sub" style="margin-top:8px">' + esc(R.prog) + '</div>';
+  if (R.res) h += '<div class="h">Contenido del respaldo</div>' + R.res.map(function(r){ return '<div class="row"><span>' + esc(r[0]) + '</span><span>' + r[1] + '</span></div>'; }).join('');
+  h += '<div class="lbl" style="margin-top:12px">Hazlo cada semana y guarda el archivo fuera del teléfono (correo o la nube). Para recuperar los datos desde este archivo hace falta un proceso de restauración: guárdalo bien y avísame si alguna vez lo necesitas.</div>';
   return h;
 }
 
@@ -1434,6 +1451,32 @@ A.reconectar = async function(){
   } catch (e) { return; }
   render(); sync();
   if (S.rol === 'admin' && ['inicio', 'cobrar', 'pagar', 'reporte'].indexOf(S.tab) >= 0) A.go(S.tab);
+};
+
+/* ---------- Acciones: respaldo (administrador) ---------- */
+A.irRespaldo = function(){ A.go('mas'); A.mas('respaldo'); };
+A.respaldo = async function(){
+  if (S.rs.busy) return;
+  S.rs.busy = true; S.rs.prog = 'Preparando…'; S.rs.res = null; S.msg = ''; S.err = ''; render();
+  try {
+    var datos = {}, resumen = [], total = 0;
+    for (var i = 0; i < TABLAS_RESPALDO.length; i++) {
+      var t = TABLAS_RESPALDO[i];
+      S.rs.prog = 'Leyendo ' + t + ' (' + (i + 1) + ' de ' + TABLAS_RESPALDO.length + ')…'; render();
+      var rows = await all(function(){ return db.from(t).select('*').order('id'); });
+      var c = await db.from(t).select('id', {count:'exact', head:true});
+      if (c.error) throw c.error;
+      if (c.count !== null && c.count !== undefined && c.count !== rows.length) throw new Error('El respaldo de ' + t + ' quedó incompleto (' + rows.length + ' de ' + c.count + '). Inténtalo otra vez.');
+      datos[t] = rows; resumen.push([t, rows.length]); total += rows.length;
+    }
+    var paquete = {app:'ventas-el-mero-mero', version:VERSION, generado:new Date().toISOString(), generado_por:S.nombre, filas:total, resumen:resumen, datos:datos};
+    var nombre = 'respaldo-ventas-' + hoy() + '.json';
+    await entregar(new Blob([JSON.stringify(paquete)], {type:'application/json'}), nombre, 'application/json');
+    lsSet('ult_respaldo', {fecha:hoy(), filas:total});
+    S.rs.res = resumen;
+    setMsg('Respaldo creado: ' + nombre + ' (' + total + ' filas).');
+  } catch (e) { setErr(errTxt(e)); }
+  S.rs.busy = false; S.rs.prog = ''; render();
 };
 
 /* ---------- Acciones: Más (administrador) ---------- */
