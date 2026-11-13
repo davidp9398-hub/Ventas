@@ -95,7 +95,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 /* ---------- Conexión (claves públicas; la seguridad la dan los roles de la base de datos) ---------- */
 var SUPABASE_URL = 'https://gkhomooeuogtwhasdyuo.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_6vB64x8E8iTsOIKfXsmzOg_yh2Gg0sU';
-var VERSION = '5.1';
+var VERSION = '5.2';
 
 var app = document.getElementById('app');
 if (!window.supabase) {
@@ -196,6 +196,7 @@ var S = {
   precios:[], cf:{restaurante:true, particular:true}, sp:null,
   q:[], off:false, syncP:null, rerun:false,
   rs:{busy:false, prog:'', res:null},
+  rst:{pk:null, nombre:'', modo:'agregar', conf:'', busy:false, prog:'', res:null, notas:[], actual:null},
   aud:{filtro:'', lista:null}
 };
 
@@ -682,6 +683,42 @@ function vProveedores(){
   return h;
 }
 
+var ORDEN_REST = ['clientes', 'proveedores', 'productos', 'precios_cliente', 'ventas', 'venta_items', 'abonos', 'cierres_mostrador', 'compras_proveedor', 'pagos_proveedor'];
+var GENERADAS = {venta_items:['subtotal'], cierres_mostrador:['total']};
+
+function vRestaurar(){
+  var R = S.rst, p = R.pk, h = '<div class="h" style="margin-top:22px">Restaurar desde un respaldo</div>';
+  h += '<div class="sub" style="margin-bottom:8px">Elige un archivo de respaldo creado por esta app. Antes de cambiar nada verás qué contiene.</div>';
+  h += '<input type="file" accept=".json,application/json" onchange="A.leerArchivo(this)"' + (R.busy ? ' disabled' : '') + '>';
+  if (p) {
+    var rempl = R.modo === 'reemplazar';
+    h += '<div class="m" style="margin:10px 0"><div style="font-weight:600">' + esc(R.nombre) + '</div><div class="sub">Generado el ' + esc(dtime(p.generado)) +
+      ' · versión ' + esc(p.version) + ' · por ' + esc(p.generado_por || '—') + '</div></div>';
+    h += ORDEN_REST.map(function(t){
+      var n = (p.datos[t] || []).length, a = (R.actual && R.actual[t] !== undefined && R.actual[t] !== null) ? R.actual[t] : '—';
+      return '<div class="row"><span>' + esc(t) + '</span><span class="sub">archivo ' + n + ' · ahora ' + a + '</span></div>';
+    }).join('');
+    h += '<div class="sub" style="margin:6px 0">Los usuarios y el registro de cambios no se restauran: los usuarios se manejan desde Supabase.</div>';
+    h += '<div class="lbl" style="margin-top:8px">¿Qué quieres hacer?</div><div class="seg" style="margin-top:4px">' +
+      tgl('Agregar lo que falta', !rempl, "A.rstModo('agregar')") + tgl('Reemplazar todo', rempl, "A.rstModo('reemplazar')") + '</div>';
+    if (!rempl) {
+      h += '<div class="sub" style="margin-bottom:8px">Agrega los registros del archivo que no existen en el sistema. No cambia ni borra nada de lo que ya está. Úsalo si borraste algo por error.</div>';
+    } else {
+      h += '<div class="wn">Borra TODO lo actual (ventas, abonos, clientes, productos, precios, proveedores…) y lo deja exactamente como estaba en el archivo. Úsalo solo si los datos actuales están dañados o si empiezas en un proyecto nuevo. Antes se te entregará un respaldo del estado actual.</div>' +
+        '<div class="f"><div class="lbl">Escribe REEMPLAZAR para confirmar</div><input type="text" autocapitalize="characters" autocomplete="off" value="' + esc(R.conf) + '" oninput="A.rstConf(this.value)"></div>';
+    }
+    h += '<button class="pri" style="width:100%"' + (R.busy ? ' disabled' : '') + ' onclick="A.restaurar()">' + (R.busy ? 'Restaurando…' : (rempl ? 'Reemplazar todo' : 'Agregar lo que falta')) + '</button>';
+  }
+  if (R.prog) h += '<div class="sub" style="margin-top:8px">' + esc(R.prog) + '</div>';
+  if (R.res) {
+    h += '<div class="h">Resultado</div>' + R.res.map(function(r){
+      return '<div class="row"><span>' + esc(r[0]) + '</span><span class="sub">agregadas ' + r[1] + ' · ya estaban ' + r[2] + (r[3] ? ' · omitidas ' + r[3] : '') + '</span></div>';
+    }).join('');
+    h += R.notas.map(function(n){ return '<div class="sub" style="margin-top:6px">' + esc(n) + '</div>'; }).join('');
+  }
+  return h;
+}
+
 var TABLAS_RESPALDO = ['clientes', 'proveedores', 'productos', 'precios_cliente', 'ventas', 'venta_items', 'abonos', 'cierres_mostrador', 'compras_proveedor', 'pagos_proveedor', 'perfiles', 'auditoria'];
 
 function vRespaldo(){
@@ -692,8 +729,8 @@ function vRespaldo(){
   h += '<button class="pri" style="width:100%"' + (R.busy ? ' disabled' : '') + ' onclick="A.respaldo()">' + (R.busy ? 'Creando respaldo…' : 'Crear y guardar respaldo') + '</button>';
   if (R.prog) h += '<div class="sub" style="margin-top:8px">' + esc(R.prog) + '</div>';
   if (R.res) h += '<div class="h">Contenido del respaldo</div>' + R.res.map(function(r){ return '<div class="row"><span>' + esc(r[0]) + '</span><span>' + r[1] + '</span></div>'; }).join('');
-  h += '<div class="lbl" style="margin-top:12px">Hazlo cada semana y guarda el archivo fuera del teléfono (correo o la nube). Para recuperar los datos desde este archivo hace falta un proceso de restauración: guárdalo bien y avísame si alguna vez lo necesitas.</div>';
-  return h;
+  h += '<div class="lbl" style="margin-top:12px">Hazlo cada semana y guarda el archivo fuera del teléfono (correo o la nube).</div>';
+  return h + vRestaurar();
 }
 
 var SEC = [['ventas','Ventas'], ['cobrado','Cobrado'], ['xcobrar','Por cobrar (saldo actual)'], ['xpagar','Por pagar (saldo actual)']];
@@ -1453,30 +1490,142 @@ A.reconectar = async function(){
   if (S.rol === 'admin' && ['inicio', 'cobrar', 'pagar', 'reporte'].indexOf(S.tab) >= 0) A.go(S.tab);
 };
 
+async function armarRespaldo(prog){
+  var datos = {}, resumen = [], total = 0;
+  for (var i = 0; i < TABLAS_RESPALDO.length; i++) {
+    var t = TABLAS_RESPALDO[i];
+    if (prog) prog('Leyendo ' + t + ' (' + (i + 1) + ' de ' + TABLAS_RESPALDO.length + ')…');
+    var rows = await all(function(){ return db.from(t).select('*').order('id'); });
+    var c = await db.from(t).select('id', {count:'exact', head:true});
+    if (c.error) throw c.error;
+    if (c.count !== null && c.count !== undefined && c.count !== rows.length) throw new Error('El respaldo de ' + t + ' quedó incompleto (' + rows.length + ' de ' + c.count + '). Inténtalo otra vez.');
+    datos[t] = rows; resumen.push([t, rows.length]); total += rows.length;
+  }
+  return {paquete:{app:'ventas-el-mero-mero', version:VERSION, generado:new Date().toISOString(), generado_por:S.nombre, filas:total, resumen:resumen, datos:datos}, resumen:resumen, total:total};
+}
+
+function validarPaquete(p){
+  if (!p || typeof p !== 'object' || p.app !== 'ventas-el-mero-mero' || !p.datos || typeof p.datos !== 'object') throw new Error('Este archivo no parece un respaldo de esta app.');
+  ORDEN_REST.forEach(function(t){
+    var f = p.datos[t];
+    if (f === undefined) return;
+    if (!Array.isArray(f)) throw new Error('El respaldo está dañado: la tabla ' + t + ' no se puede leer.');
+    f.forEach(function(r){ if (!r || typeof r !== 'object' || !r.id) throw new Error('El respaldo está dañado: hay filas sin identificador en ' + t + '.'); });
+  });
+}
+
+async function contarActual(){
+  var o = {};
+  for (var i = 0; i < ORDEN_REST.length; i++) {
+    var c = await db.from(ORDEN_REST[i]).select('id', {count:'exact', head:true});
+    if (c.error) throw c.error;
+    o[ORDEN_REST[i]] = c.count;
+  }
+  return o;
+}
+
+async function insertarFilas(t, filas, notas){
+  var ok = 0, conf = 0, errs = [], users = S.perfMap;
+  var limpias = filas.map(function(r){
+    var o = {};
+    Object.keys(r).forEach(function(k){ if ((GENERADAS[t] || []).indexOf(k) < 0) o[k] = r[k]; });
+    if (o.creado_por && !users[o.creado_por]) { o.creado_por = null; notas.reasignados++; }
+    return o;
+  });
+  for (var i = 0; i < limpias.length; i += 200) {
+    var lote = limpias.slice(i, i + 200);
+    var r = await conTiempo(db.from(t).insert(lote), 60000);
+    if (!r.error) { ok += lote.length; continue; }
+    for (var j = 0; j < lote.length; j++) {
+      var r1 = await conTiempo(db.from(t).insert(lote[j]), 30000);
+      if (!r1.error) ok++;
+      else if (dup(r1.error)) conf++;
+      else errs.push(t + ': ' + r1.error.message);
+    }
+  }
+  return {ok:ok, conf:conf, errs:errs};
+}
+
 /* ---------- Acciones: respaldo (administrador) ---------- */
 A.irRespaldo = function(){ A.go('mas'); A.mas('respaldo'); };
 A.respaldo = async function(){
   if (S.rs.busy) return;
   S.rs.busy = true; S.rs.prog = 'Preparando…'; S.rs.res = null; S.msg = ''; S.err = ''; render();
   try {
-    var datos = {}, resumen = [], total = 0;
-    for (var i = 0; i < TABLAS_RESPALDO.length; i++) {
-      var t = TABLAS_RESPALDO[i];
-      S.rs.prog = 'Leyendo ' + t + ' (' + (i + 1) + ' de ' + TABLAS_RESPALDO.length + ')…'; render();
-      var rows = await all(function(){ return db.from(t).select('*').order('id'); });
-      var c = await db.from(t).select('id', {count:'exact', head:true});
-      if (c.error) throw c.error;
-      if (c.count !== null && c.count !== undefined && c.count !== rows.length) throw new Error('El respaldo de ' + t + ' quedó incompleto (' + rows.length + ' de ' + c.count + '). Inténtalo otra vez.');
-      datos[t] = rows; resumen.push([t, rows.length]); total += rows.length;
-    }
-    var paquete = {app:'ventas-el-mero-mero', version:VERSION, generado:new Date().toISOString(), generado_por:S.nombre, filas:total, resumen:resumen, datos:datos};
+    var r = await armarRespaldo(function(m){ S.rs.prog = m; render(); });
     var nombre = 'respaldo-ventas-' + hoy() + '.json';
-    await entregar(new Blob([JSON.stringify(paquete)], {type:'application/json'}), nombre, 'application/json');
-    lsSet('ult_respaldo', {fecha:hoy(), filas:total});
-    S.rs.res = resumen;
-    setMsg('Respaldo creado: ' + nombre + ' (' + total + ' filas).');
+    await entregar(new Blob([JSON.stringify(r.paquete)], {type:'application/json'}), nombre, 'application/json');
+    lsSet('ult_respaldo', {fecha:hoy(), filas:r.total});
+    S.rs.res = r.resumen;
+    setMsg('Respaldo creado: ' + nombre + ' (' + r.total + ' filas).');
   } catch (e) { setErr(errTxt(e)); }
   S.rs.busy = false; S.rs.prog = ''; render();
+};
+
+A.rstModo = function(m){ S.rst.modo = m; S.rst.conf = ''; S.err = ''; render(); };
+A.rstConf = function(v){ S.rst.conf = v; };
+A.leerArchivo = async function(el){
+  var f = el && el.files && el.files[0];
+  if (!f) return;
+  var R = S.rst;
+  R.res = null; R.notas = []; R.prog = 'Leyendo el archivo…'; S.msg = ''; S.err = ''; render();
+  try {
+    var texto = await (f.text ? f.text() : new Promise(function(res, rej){ var fr = new FileReader(); fr.onload = function(){ res(fr.result); }; fr.onerror = rej; fr.readAsText(f); }));
+    var p;
+    try { p = JSON.parse(texto); } catch (x) { throw new Error('El archivo está dañado o no es un respaldo: no se puede leer.'); }
+    validarPaquete(p);
+    R.pk = p; R.nombre = f.name; R.conf = ''; R.modo = 'agregar';
+    R.actual = null; R.prog = 'Comparando con los datos actuales…'; render();
+    R.actual = await contarActual();
+  } catch (e) { R.pk = null; setErr(errTxt(e)); }
+  R.prog = ''; render();
+};
+A.restaurar = async function(){
+  var R = S.rst;
+  if (R.busy || !R.pk) return;
+  if (S.q.length) { setErr('Hay registros pendientes de enviar. Envíalos primero (toca el aviso amarillo) y vuelve a intentarlo.'); render(); return; }
+  if (navigator.onLine === false) { setErr('Para restaurar necesitas conexión a internet.'); render(); return; }
+  var rempl = R.modo === 'reemplazar';
+  if (rempl && String(R.conf).trim() !== 'REEMPLAZAR') { setErr('Escribe REEMPLAZAR para confirmar.'); render(); return; }
+  if (!rempl && !window.confirm('Se agregarán al sistema los registros del respaldo que falten. No se borrará nada. ¿Continuar?')) return;
+  R.busy = true; R.res = null; R.notas = []; S.err = ''; S.msg = ''; render();
+  try {
+    if (rempl) {
+      R.prog = 'Creando un respaldo de seguridad del estado actual…'; render();
+      var seg = await armarRespaldo(function(m){ R.prog = 'Respaldo de seguridad: ' + m; render(); });
+      await entregar(new Blob([JSON.stringify(seg.paquete)], {type:'application/json'}), 'respaldo-previo-' + hoy() + '.json', 'application/json');
+      if (!window.confirm('Se creó un respaldo del estado ACTUAL (respaldo-previo). ¿Ya lo guardaste en un lugar seguro? Si no, toca Cancelar y no se borrará nada.')) throw new Error('Cancelado: guarda primero el respaldo de seguridad.');
+      var rev = ORDEN_REST.slice().reverse();
+      for (var d = 0; d < rev.length; d++) {
+        R.prog = 'Borrando ' + rev[d] + '…'; render();
+        var del = await conTiempo(db.from(rev[d]).delete().not('id', 'is', null), 60000);
+        if (del.error) throw del.error;
+      }
+    }
+    var res = [], notas = {reasignados:0}, errs = [];
+    for (var i = 0; i < ORDEN_REST.length; i++) {
+      var t = ORDEN_REST[i], filas = R.pk.datos[t] || [];
+      R.prog = 'Restaurando ' + t + ' (' + (i + 1) + ' de ' + ORDEN_REST.length + ')…'; render();
+      var ya = 0;
+      if (!rempl) {
+        var ex = {};
+        (await all(function(){ return db.from(t).select('id').order('id'); })).forEach(function(r){ ex[r.id] = 1; });
+        var nuevas = filas.filter(function(r){ return !ex[r.id]; });
+        ya = filas.length - nuevas.length; filas = nuevas;
+      }
+      var r = await insertarFilas(t, filas, notas);
+      res.push([t, r.ok, ya, r.conf + r.errs.length]);
+      errs = errs.concat(r.errs);
+    }
+    var out = [];
+    if (notas.reasignados) out.push(notas.reasignados + ' registro(s) eran de usuarios que ya no existen; quedaron como "Sistema".');
+    if (errs.length) out.push('No se pudieron restaurar ' + errs.length + ' registro(s). Primeros avisos: ' + errs.slice(0, 3).join(' | '));
+    R.res = res; R.notas = out;
+    await cargarCatalogos(); S.ini = null; S.saldos = null; S.pagar.saldos = null; S.rep.datos = null;
+    R.actual = await contarActual();
+    setMsg(rempl ? 'Listo: los datos quedaron como en el respaldo.' : 'Listo: se agregó lo que faltaba.');
+  } catch (e) { setErr(errTxt(e) + ' Puedes volver a intentarlo: repetir no duplica registros.'); }
+  R.busy = false; R.prog = ''; R.conf = ''; render();
 };
 
 /* ---------- Acciones: Más (administrador) ---------- */
