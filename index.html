@@ -100,7 +100,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 /* ---------- Conexión (claves públicas; la seguridad la dan los roles de la base de datos) ---------- */
 var SUPABASE_URL = 'https://gkhomooeuogtwhasdyuo.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_6vB64x8E8iTsOIKfXsmzOg_yh2Gg0sU';
-var VERSION = '5.3';
+var VERSION = '5.4';
 
 var app = document.getElementById('app');
 if (!window.supabase) {
@@ -202,6 +202,7 @@ var S = {
   q:[], off:false, syncP:null, rerun:false,
   rs:{busy:false, prog:'', res:null},
   tal:{N:0, F:0}, tl:{ser:'N', datos:null, q:'', res:null},
+  vt:{fecha:'', q:'', lista:null, det:null, ed:null, mot:null},
   rst:{pk:null, nombre:'', modo:'agregar', conf:'', busy:false, prog:'', res:null, notas:[], actual:null},
   aud:{filtro:'', lista:null}
 };
@@ -418,7 +419,7 @@ function vHead(){
   var t = {inicio:'Inicio', venta:(S.vm === 'mos' ? 'Total de mostrador' : 'Venta a cliente'), cobrar:'Cuentas por cobrar', pagar:'Cuentas por pagar', reporte:(S.rep.per === 'sem' ? 'Reporte semanal' : 'Reporte mensual'), mas:'Más', cola:'Pendientes de enviar'}[S.tab];
   if (S.tab === 'cobrar' && S.hist) t = S.hist.nombre;
   if (S.tab === 'pagar' && S.pagar.hist) t = S.pagar.hist.nombre;
-  if (S.tab === 'mas') t = {menu:'Más', clientes:'Clientes', proveedores:'Proveedores', productos:'Productos', usuarios:'Usuarios', auditoria:'Registro de cambios', respaldo:'Respaldo de datos', talonarios:'Control de talonarios'}[S.mas] || 'Más';
+  if (S.tab === 'mas') t = {menu:'Más', clientes:'Clientes', proveedores:'Proveedores', productos:'Productos', usuarios:'Usuarios', auditoria:'Registro de cambios', respaldo:'Respaldo de datos', talonarios:'Control de talonarios', ventas:'Ventas'}[S.mas] || 'Más';
   return '<header><div><b>'+esc(t)+'</b><div class="lbl">'+esc(S.nombre)+' · '+(S.rol === 'admin' ? 'Administrador' : 'Empleado')+'</div></div>' +
     '<button class="ib" onclick="A.salir()" aria-label="Cerrar sesión">'+ic('out')+'</button></header>';
 }
@@ -567,7 +568,7 @@ function vHist(){
   if (!H.movs.length) h += '<div class="lbl" style="padding:12px 0">Sin movimientos.</div>';
   h += H.movs.map(function(x){
     var lab = x.t === 'a' ? 'Abono' : (x.sa ? 'Saldo anterior' : (x.forma === 'contado' ? 'Compra de contado' : 'Compra a crédito'));
-    return '<div class="row"><span>'+lab+'<div class="sub">'+fdate(x.fecha)+' · Registrado por '+esc(nameOf(x.by))+(x.tal ? ' · '+esc(x.tal) : '')+(x.nota ? ' · '+esc(x.nota) : '')+'</div></span><span class="'+(x.t === 'a' ? 'ok' : '')+'">'+(x.t === 'a' ? '+' : '')+money(x.m)+'</span></div>';
+    return '<div class="row'+(x.id && S.rol === 'admin' ? ' tap' : '')+'"'+(x.id && S.rol === 'admin' ? ' onclick="A.verVenta(\''+x.id+'\')"' : '')+'><span>'+lab+(x.anu ? ' <span class="tag" style="background:rgba(179,38,30,.15);color:var(--bad)">Anulada</span>' : '')+'<div class="sub">'+fdate(x.fecha)+' · Registrado por '+esc(nameOf(x.by))+(x.tal ? ' · '+esc(x.tal) : '')+(x.nota ? ' · '+esc(x.nota) : '')+'</div></span><span class="'+(x.t === 'a' ? 'ok' : '')+'">'+(x.t === 'a' ? '+' : '')+money(x.m)+'</span></div>';
   }).join('');
   return h;
 }
@@ -575,14 +576,14 @@ function vHist(){
 function vMas(){
   var h = banner();
   if (S.mas === 'menu') {
-    var it = [['clientes','Clientes'], ['proveedores','Proveedores'], ['productos','Productos y precios'], ['usuarios','Usuarios'], ['talonarios','Control de talonarios'], ['auditoria','Registro de cambios'], ['respaldo','Respaldo de datos']];
+    var it = [['clientes','Clientes'], ['proveedores','Proveedores'], ['productos','Productos y precios'], ['usuarios','Usuarios'], ['ventas','Ventas (corregir o anular)'], ['talonarios','Control de talonarios'], ['auditoria','Registro de cambios'], ['respaldo','Respaldo de datos']];
     return h + it.map(function(x){
       return '<div class="row tap" onclick="A.mas(\''+x[0]+'\')"><span>'+x[1]+'</span>'+ic('next')+'</div>';
     }).join('') + '<div class="lbl" style="margin-top:16px">Versión '+VERSION+'</div>';
   }
   var back = '<button onclick="A.mas(\'menu\')" style="margin-bottom:10px;display:inline-flex;align-items:center;gap:4px">'+ic('back',18)+' Volver</button>';
-  var body = {clientes:vClientes, proveedores:vProveedores, productos:vProductos, usuarios:vUsuarios, auditoria:vAuditoria, respaldo:vRespaldo, talonarios:vTalonarios}[S.mas]();
-  return back + h + body;
+  var body = {clientes:vClientes, proveedores:vProveedores, productos:vProductos, usuarios:vUsuarios, auditoria:vAuditoria, respaldo:vRespaldo, talonarios:vTalonarios, ventas:vVentas}[S.mas]();
+  return (S.mas === 'ventas' && S.vt.det ? '' : back) + h + body;
 }
 
 function vClientes(){
@@ -796,7 +797,86 @@ function vTalonarios(){
     }).join('') + '</div>';
     if (d.gaps.length > 60) h += '<div class="sub">Se muestran los primeros 60 grupos de ' + d.gaps.length + '.</div>';
   }
-  return h + '<div class="row" style="margin-top:10px"><span>Ventas a clientes sin talonario</span><span>' + d.sin + '</span></div>';
+  return h + '<div class="row" style="margin-top:10px"><span>Anuladas (el número queda usado)</span><span>' + (d.anuladas || 0) + '</span></div><div class="row"><span>Ventas a clientes sin talonario</span><span>' + d.sin + '</span></div>';
+}
+
+function vVentas(){
+  var V = S.vt;
+  if (V.det) return vVentaDet();
+  var h = '<div class="f"><div class="lbl">Día</div><input type="date" max="' + hoy() + '" value="' + esc(V.fecha) + '" onchange="A.vtFecha(this.value)" aria-label="Día"></div>' +
+    '<div class="f"><div class="lbl">O busca por talonario (ejemplo: N1060 o F1060)</div><div style="display:flex;gap:8px"><input type="text" placeholder="N1060" autocapitalize="characters" value="' + esc(V.q) + '" oninput="A.vtQ(this)" aria-label="Buscar por talonario"><button onclick="A.vtBuscar()">Buscar</button></div></div>';
+  if (!V.lista) return h + '<div class="lbl">Cargando…</div>';
+  if (!V.lista.length) return h + '<div class="lbl" style="padding:16px 0">No hay ventas para mostrar.</div>';
+  return h + V.lista.map(function(v){
+    var et = etqTal(v.talonario_serie, v.talonario_numero);
+    return '<div class="row tap" onclick="A.abrirVenta(\'' + v.id + '\')"><span>' + esc(v.clientes ? v.clientes.nombre : '') +
+      (v.anulada ? ' <span class="tag" style="background:rgba(179,38,30,.15);color:var(--bad)">Anulada</span>' : '') +
+      '<div class="sub">' + fdate(v.fecha) + ' · ' + (v.es_saldo_anterior ? 'Saldo anterior' : (v.forma === 'contado' ? 'Contado' : 'A crédito')) + (et ? ' · ' + esc(et) : '') + '</div></span>' +
+      '<span class="r"' + (v.anulada ? ' style="text-decoration:line-through;color:var(--tx2)"' : '') + '>' + money(v.total) + ic('next') + '</span></div>';
+  }).join('');
+}
+
+function vVentaDet(){
+  var D = S.vt.det, V = S.vt;
+  var h = '<button onclick="A.vtVolver()" style="margin-bottom:10px;display:inline-flex;align-items:center;gap:4px">' + ic('back', 18) + ' Volver</button>';
+  if (V.ed) return h + vVentaEd();
+  var et = etqTal(D.talonario_serie, D.talonario_numero);
+  h += '<div class="m" style="margin-bottom:10px"><div style="font-weight:600">' + esc(D.clientes ? D.clientes.nombre : '') + '</div>' +
+    '<div class="sub">' + fdate(D.fecha) + ' · ' + (D.es_saldo_anterior ? 'Saldo anterior' : (D.forma === 'contado' ? 'Contado' : 'A crédito')) + (et ? ' · ' + esc(et) : ' · Sin talonario') + '</div>' +
+    '<div class="big" style="margin-top:4px">' + money(D.total) + '</div>' +
+    '<div class="sub">Registrada por ' + esc(nameOf(D.creado_por)) + ' · ' + esc(dtime(D.creado_en)) + (D.nota ? ' · ' + esc(D.nota) : '') + '</div></div>';
+  if (D.anulada) {
+    h += '<div class="err"><b>Venta anulada.</b> Motivo: ' + esc(D.anulada_motivo || '') + '<div class="sub" style="color:inherit">Por ' + esc(nameOf(D.anulada_por)) + ' · ' + esc(dtime(D.anulada_en)) + '. No cuenta en ventas ni en lo que debe el cliente.</div></div>';
+  }
+  var its = D.venta_items || [];
+  if (its.length) {
+    h += '<div class="h">Productos</div>' + its.map(function(i){
+      var p = S.productos.filter(function(x){ return x.id === i.producto_id; })[0];
+      return '<div class="row"><span>' + esc(p ? p.nombre : '(producto)') + (i.presentacion ? ' · ' + presLab(i.presentacion) : '') + '<div class="sub">' + (+i.kilos) + ' kg × ' + money(i.precio_kg) + '</div></span><span>' + money(i.kilos * i.precio_kg) + '</span></div>';
+    }).join('');
+  }
+  if (V.mot) {
+    return h + '<div class="m" style="margin-top:12px"><div class="f"><div class="lbl">Motivo de la anulación (obligatorio)</div><input type="text" placeholder="Ej: error de cliente, nota anulada en papel" value="' + esc(V.mot.texto) + '" oninput="A.motF(this.value)"></div>' +
+      '<div class="sub" style="margin-bottom:8px">La venta no se borra: queda marcada y su número de talonario sigue usado. Dejará de contar en ventas y en la deuda del cliente.</div>' +
+      '<div class="seg" style="margin-bottom:0"><button onclick="A.vtCancelAnular()">Cancelar</button><button class="pri" onclick="A.vtAnular()"' + (S.busy ? ' disabled' : '') + '>Anular venta</button></div></div>';
+  }
+  h += '<div class="seg" style="margin-top:12px">';
+  if (D.anulada) h += '<button class="pri" onclick="A.vtReactivar()"' + (S.busy ? ' disabled' : '') + '>Reactivar venta</button>';
+  else h += '<button onclick="A.vtCorregir()">' + (D.es_saldo_anterior ? 'Corregir monto' : 'Corregir venta') + '</button><button onclick="A.vtPedirMotivo()">Anular venta</button>';
+  return h + '</div>';
+}
+
+function totalEd(){
+  var t = 0;
+  S.vt.ed.lineas.forEach(function(l){ var k = num(l.kilos), p = num(l.precio); if (k > 0 && p >= 0) t += k * p; });
+  return Math.round(t * 100) / 100;
+}
+
+function vVentaEd(){
+  var E = S.vt.ed, cl = S.clientes.filter(function(c){ return c.activo || c.id === E.cli; });
+  var h = '<div class="m"><div class="f"><div class="lbl">Cliente</div><select onchange="A.edF(\'cli\',this.value)">' + opcionesClientes(cl, E.cli) + '</select></div>';
+  if (E.sa) {
+    h += '<div class="f"><div class="lbl">Monto que debe ($)</div><input type="text" inputmode="decimal" value="' + esc(E.monto) + '" oninput="A.edF(\'monto\',this.value)"></div>' +
+      '<div class="f"><div class="lbl">Nota</div><input type="text" value="' + esc(E.nota) + '" oninput="A.edF(\'nota\',this.value)"></div>';
+  } else {
+    h += '<div class="lbl">Forma de pago</div><div class="seg" style="margin:4px 0 10px"><button class="' + (E.forma === 'contado' ? 'on' : '') + '" onclick="A.edForma(\'contado\')">Contado</button>' +
+      '<button class="' + (E.forma === 'credito' ? 'on' : '') + '" onclick="A.edForma(\'credito\')">A crédito</button></div>';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><div class="lbl">N.º de talonario</div><label style="font-size:12px;color:var(--tx2);display:flex;gap:6px;align-items:center"><input type="checkbox" style="width:18px;min-height:18px;height:18px"' + (E.sin ? ' checked' : '') + ' onchange="A.edSin(this.checked)"> Sin talonario</label></div>';
+    if (!E.sin) {
+      h += '<div class="seg" style="margin:0 0 6px"><button class="' + (E.serie === 'N' ? 'on' : '') + '" onclick="A.edSerie(\'N\')">Nota (N)</button><button class="' + (E.serie === 'F' ? 'on' : '') + '" onclick="A.edSerie(\'F\')">Factura (F)</button></div>' +
+        '<div class="pf" style="margin-bottom:10px"><span>' + E.serie + '</span><input type="text" inputmode="numeric" value="' + esc(E.numero) + '" oninput="A.edNum(this)" aria-label="Número de talonario"></div>';
+    }
+    h += '<div class="f"><div class="lbl">Fecha</div><input type="date" max="' + hoy() + '" value="' + esc(E.fecha) + '" onchange="A.edF(\'fecha\',this.value)"></div>' +
+      '<div class="f"><div class="lbl">Nota (opcional)</div><input type="text" value="' + esc(E.nota) + '" oninput="A.edF(\'nota\',this.value)"></div>';
+    h += '<div class="h">Productos (cambia kilos o precio)</div>' + E.lineas.map(function(l, i){
+      return '<div class="row" style="align-items:flex-start"><span style="flex:1">' + esc(l.nombre) + (l.pres ? ' · ' + presLab(l.pres) : '') +
+        '<div style="display:flex;gap:6px;margin-top:4px"><input type="text" inputmode="decimal" value="' + esc(l.kilos) + '" oninput="A.edL(' + i + ',\'kilos\',this.value)" aria-label="Kilos" style="width:80px"><span class="sub" style="align-self:center">kg ×</span>' +
+        '<input type="text" inputmode="decimal" value="' + esc(l.precio) + '" oninput="A.edL(' + i + ',\'precio\',this.value)" aria-label="Precio por kilo" style="width:90px"></div></span>' +
+        (E.lineas.length > 1 ? '<button class="ib" style="border:none" onclick="A.edQuitar(' + i + ')" aria-label="Quitar producto">' + ic('x', 18) + '</button>' : '') + '</div>';
+    }).join('') + '<div class="sub" style="margin-top:6px">Para agregar otro producto, anula esta venta y registra una nueva.</div>' +
+      '<div class="row" style="font-weight:600;border:none"><span>Total</span><span id="ed-tot">' + money(totalEd()) + '</span></div>';
+  }
+  return h + '<div class="seg" style="margin:10px 0 0"><button onclick="A.vtCancelEd()">Cancelar</button><button class="pri" onclick="A.vtGuardar()"' + (S.busy ? ' disabled' : '') + '>' + (S.busy ? 'Guardando…' : 'Guardar corrección') + '</button></div></div>';
 }
 
 var TABLAS_RESPALDO = ['clientes', 'proveedores', 'productos', 'precios_cliente', 'ventas', 'venta_items', 'abonos', 'cierres_mostrador', 'compras_proveedor', 'pagos_proveedor', 'perfiles', 'auditoria'];
@@ -868,8 +948,8 @@ function vReporte(){
 
 var TL = {ventas:'Venta', venta_items:'Detalle de venta', abonos:'Abono', cierres_mostrador:'Total de mostrador', clientes:'Cliente', proveedores:'Proveedor', productos:'Producto', perfiles:'Usuario', compras_proveedor:'Compra a proveedor', pagos_proveedor:'Pago a proveedor', precios_cliente:'Precio especial'};
 var AL = {INSERT:'Creó', UPDATE:'Editó', DELETE:'Eliminó'};
-var FLAB = {cliente_id:'Cliente', producto_id:'Producto', proveedor_id:'Proveedor', forma:'Forma', total:'Total', fecha:'Fecha', monto:'Monto', kilos:'Kilos', precio_kg:'Precio/kg', nombre:'Nombre', telefono:'Teléfono', activo:'Activo', rol:'Rol', correo:'Correo', efectivo:'Efectivo', punto_venta_1:'Punto de venta 1', punto_venta_2:'Punto de venta 2', pago_movil:'Pago móvil', nota:'Nota', es_saldo_anterior:'Saldo anterior', talonario_serie:'Serie', talonario_numero:'N.º de talonario', tipo:'Tipo', presentacion:'Presentación', precio:'Precio especial', precio_entero:'Precio entero', precio_ruedas:'Precio ruedas', precio_filete:'Precio filete'};
-var FHID = {id:1, creado_en:1, actualizado_en:1, creado_por:1, venta_id:1, subtotal:1};
+var FLAB = {cliente_id:'Cliente', producto_id:'Producto', proveedor_id:'Proveedor', forma:'Forma', total:'Total', fecha:'Fecha', monto:'Monto', kilos:'Kilos', precio_kg:'Precio/kg', nombre:'Nombre', telefono:'Teléfono', activo:'Activo', rol:'Rol', correo:'Correo', efectivo:'Efectivo', punto_venta_1:'Punto de venta 1', punto_venta_2:'Punto de venta 2', pago_movil:'Pago móvil', nota:'Nota', es_saldo_anterior:'Saldo anterior', talonario_serie:'Serie', talonario_numero:'N.º de talonario', anulada:'Anulada', anulada_motivo:'Motivo de la anulación', tipo:'Tipo', presentacion:'Presentación', precio:'Precio especial', precio_entero:'Precio entero', precio_ruedas:'Precio ruedas', precio_filete:'Precio filete'};
+var FHID = {anulada_por:1, anulada_en:1, id:1, creado_en:1, actualizado_en:1, creado_por:1, venta_id:1, subtotal:1};
 var FMON = {total:1, monto:1, efectivo:1, punto_venta_1:1, punto_venta_2:1, pago_movil:1, precio_kg:1, precio:1, precio_entero:1, precio_ruedas:1, precio_filete:1};
 
 function fval(k, v){
@@ -998,11 +1078,11 @@ async function cargarInicio(){
   try {
     var h = hoy();
     var r = await Promise.all([
-      db.from('ventas').select('total,forma').eq('es_saldo_anterior', false).eq('fecha', h),
+      db.from('ventas').select('total,forma').eq('es_saldo_anterior', false).eq('anulada', false).eq('fecha', h),
       db.from('abonos').select('monto').eq('fecha', h),
       db.from('cierres_mostrador').select('total').eq('fecha', h).maybeSingle(),
       db.from('saldo_clientes').select('saldo'),
-      db.from('ventas').select('total,forma,fecha,creado_por,talonario_serie,talonario_numero,clientes(nombre)').eq('es_saldo_anterior', false).order('creado_en', {ascending:false}).limit(5),
+      db.from('ventas').select('total,forma,fecha,creado_por,talonario_serie,talonario_numero,clientes(nombre)').eq('es_saldo_anterior', false).eq('anulada', false).order('creado_en', {ascending:false}).limit(5),
       db.from('saldo_proveedores').select('saldo')
     ]);
     r.forEach(function(x){ if (x.error) throw x.error; });
@@ -1047,7 +1127,7 @@ async function cargarReporte(){
   R.datos = null; if (S.tab === 'reporte') render();
   try {
     var r = await Promise.all([
-      all(function(){ return db.from('ventas').select('cliente_id,total,forma,fecha').eq('es_saldo_anterior', false).gte('fecha', d1).lte('fecha', d2).order('fecha').order('id'); }),
+      all(function(){ return db.from('ventas').select('cliente_id,total,forma,fecha').eq('es_saldo_anterior', false).eq('anulada', false).gte('fecha', d1).lte('fecha', d2).order('fecha').order('id'); }),
       all(function(){ return db.from('abonos').select('cliente_id,monto,fecha').gte('fecha', d1).lte('fecha', d2).order('fecha').order('id'); }),
       all(function(){ return db.from('cierres_mostrador').select('fecha,efectivo,punto_venta_1,punto_venta_2,pago_movil,total').gte('fecha', d1).lte('fecha', d2).order('fecha').order('id'); }),
       db.from('saldo_clientes').select('id,nombre,credito_total,abonado_total,saldo').gt('saldo', 0).order('saldo', {ascending:false}),
@@ -1319,13 +1399,13 @@ A.verHist = async function(id){
   S.msg = ''; S.err = ''; render();
   try {
     var r = await Promise.all([
-      db.from('ventas').select('fecha,forma,total,creado_en,creado_por,es_saldo_anterior,nota,talonario_serie,talonario_numero').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
+      db.from('ventas').select('id,anulada,fecha,forma,total,creado_en,creado_por,es_saldo_anterior,nota,talonario_serie,talonario_numero').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
       db.from('abonos').select('fecha,monto,creado_en,creado_por').eq('cliente_id', id).order('creado_en', {ascending:false}).limit(200),
       db.from('saldo_clientes').select('saldo').eq('id', id).maybeSingle()
     ]);
     r.forEach(function(x){ if (x.error) throw x.error; });
     var movs = [], compras = 0;
-    r[0].data.forEach(function(x){ compras += +x.total; movs.push({t:'v', forma:x.forma, m:+x.total, fecha:x.fecha, ts:x.creado_en, by:x.creado_por, sa:x.es_saldo_anterior, nota:x.nota, tal:etqTal(x.talonario_serie, x.talonario_numero)}); });
+    r[0].data.forEach(function(x){ if (!x.anulada) compras += +x.total; movs.push({id:x.id, anu:x.anulada, t:'v', forma:x.forma, m:+x.total, fecha:x.fecha, ts:x.creado_en, by:x.creado_por, sa:x.es_saldo_anterior, nota:x.nota, tal:etqTal(x.talonario_serie, x.talonario_numero)}); });
     r[1].data.forEach(function(x){ movs.push({t:'a', m:+x.monto, fecha:x.fecha, ts:x.creado_en, by:x.creado_por}); });
     movs.sort(function(a, b){ return a.ts < b.ts ? 1 : -1; });
     S.hist.movs = movs; S.hist.compras = compras;
@@ -1592,19 +1672,49 @@ async function cargarTal(){
   var T = S.tl, k = T.ser;
   T.datos = null; T.res = null; render();
   try {
-    var filas = await all(function(){ return db.from('ventas').select('talonario_numero').eq('talonario_serie', k).order('talonario_numero'); });
+    var filas = await all(function(){ return db.from('ventas').select('talonario_numero,anulada').eq('talonario_serie', k).order('talonario_numero'); });
     var sin = await db.from('ventas').select('id', {count:'exact', head:true}).is('talonario_serie', null).eq('es_saldo_anterior', false);
     if (sin.error) throw sin.error;
-    var nums = filas.map(function(r){ return r.talonario_numero; }), gaps = [], huecos = 0;
+    var nums = filas.map(function(r){ return r.talonario_numero; }), gaps = [], huecos = 0, anuladas = filas.filter(function(r){ return r.anulada; }).length;
+    nums.sort(function(a, b){ return a - b; });
     for (var i = 1; i < nums.length; i++) {
       if (nums[i] > nums[i - 1] + 1) { gaps.push([nums[i - 1] + 1, nums[i] - 1]); huecos += nums[i] - nums[i - 1] - 1; }
     }
     if (T.ser !== k) return;
-    T.datos = {n:nums.length, first:nums[0], last:nums[nums.length - 1], gaps:gaps, huecos:huecos, sin:sin.count || 0};
+    T.datos = {n:nums.length, first:nums[0], last:nums[nums.length - 1], gaps:gaps, huecos:huecos, anuladas:anuladas, sin:sin.count || 0};
     if (nums.length) { S.tal[k] = Math.max(S.tal[k] || 0, nums[nums.length - 1]); cacheTal(); }
   } catch (e) { setErr(errTxt(e)); T.datos = {n:0, first:null, last:null, gaps:[], huecos:0, sin:0}; }
   if (S.tab === 'mas' && S.mas === 'talonarios') render();
 }
+
+async function cargarVentas(){
+  var V = S.vt, qs = String(V.q || '').trim().toUpperCase();
+  V.lista = null; render();
+  try {
+    var q = db.from('ventas').select('id,total,forma,fecha,anulada,es_saldo_anterior,talonario_serie,talonario_numero,creado_en,clientes(nombre)').limit(200);
+    if (qs) {
+      var m = qs.match(/^([NF])?\s*(\d{1,9})$/);
+      if (!m) { setErr('Escribe el talonario así: N1060 o F1060.'); V.lista = []; render(); return; }
+      q = q.eq('talonario_numero', +m[2]);
+      if (m[1]) q = q.eq('talonario_serie', m[1]);
+    } else {
+      q = q.eq('fecha', V.fecha);
+    }
+    var r = await q.order('creado_en', {ascending:false});
+    if (r.error) throw r.error;
+    V.lista = r.data;
+  } catch (e) { setErr(errTxt(e)); V.lista = []; }
+  if (S.tab === 'mas' && S.mas === 'ventas') render();
+}
+
+async function cargarVentaDet(id){
+  var r = await db.from('ventas').select('*,clientes(nombre),venta_items(id,producto_id,presentacion,kilos,precio_kg)').eq('id', id).maybeSingle();
+  if (r.error) throw r.error;
+  if (!r.data) throw new Error('No se encontró la venta.');
+  S.vt.det = r.data;
+}
+
+function invalidarVentas(){ S.ini = null; S.saldos = null; S.rep.datos = null; S.hist = null; }
 
 async function armarRespaldo(prog){
   var datos = {}, resumen = [], total = 0;
@@ -1646,6 +1756,7 @@ async function insertarFilas(t, filas, notas){
     var o = {};
     Object.keys(r).forEach(function(k){ if ((GENERADAS[t] || []).indexOf(k) < 0) o[k] = r[k]; });
     if (o.creado_por && !users[o.creado_por]) { o.creado_por = null; notas.reasignados++; }
+    if (o.anulada_por && !users[o.anulada_por]) o.anulada_por = null;
     return o;
   });
   for (var i = 0; i < limpias.length; i += 200) {
@@ -1662,6 +1773,118 @@ async function insertarFilas(t, filas, notas){
   return {ok:ok, conf:conf, errs:errs};
 }
 
+/* ---------- Acciones: corregir o anular ventas (administrador) ---------- */
+A.vtFecha = function(v){ if (!v) return; S.vt.fecha = v > hoy() ? hoy() : v; S.vt.q = ''; S.err = ''; cargarVentas(); };
+A.vtQ = function(el){ S.vt.q = el.value; };
+A.vtBuscar = function(){ S.err = ''; cargarVentas(); };
+A.vtVolver = function(){
+  if (S.vt.ed) { S.vt.ed = null; render(); return; }
+  S.vt.det = null; S.vt.mot = null; S.msg = ''; S.err = ''; render();
+  if (!S.vt.lista) cargarVentas();
+};
+A.abrirVenta = async function(id){
+  S.msg = ''; S.err = ''; S.vt.ed = null; S.vt.mot = null;
+  try { await cargarVentaDet(id); } catch (e) { setErr(errTxt(e)); }
+  render();
+};
+A.verVenta = async function(id){
+  S.tab = 'mas'; S.mas = 'ventas'; S.ce = null; S.pe = null; S.pf = null; S.pve = null; S.sp = null;
+  if (!S.vt.fecha) S.vt.fecha = hoy();
+  await A.abrirVenta(id);
+};
+A.vtPedirMotivo = function(){ S.vt.mot = {texto:''}; S.err = ''; render(); };
+A.motF = function(v){ S.vt.mot.texto = v; };
+A.vtCancelAnular = function(){ S.vt.mot = null; S.err = ''; render(); };
+A.vtAnular = async function(){
+  if (S.busy) return;
+  var D = S.vt.det, mo = String((S.vt.mot && S.vt.mot.texto) || '').trim();
+  if (mo.length < 3) { setErr('Escribe el motivo de la anulación (al menos 3 letras).'); render(); return; }
+  if (!window.confirm('¿Anular esta venta de ' + money(D.total) + '? No se borra, pero dejará de contar en ventas y en la deuda del cliente.')) return;
+  S.busy = true; render();
+  try {
+    var r = await db.from('ventas').update({anulada:true, anulada_motivo:mo}).eq('id', D.id).select('id');
+    if (r.error) throw r.error;
+    if (!r.data || !r.data.length) throw new Error('No se pudo anular la venta.');
+    S.vt.mot = null; invalidarVentas(); S.vt.lista = null;
+    await cargarVentaDet(D.id);
+    setMsg('Venta anulada.');
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
+};
+A.vtReactivar = async function(){
+  if (S.busy) return;
+  var D = S.vt.det;
+  if (!window.confirm('¿Reactivar esta venta? Volverá a contar en ventas y en la deuda del cliente.')) return;
+  S.busy = true; render();
+  try {
+    var r = await db.from('ventas').update({anulada:false}).eq('id', D.id).select('id');
+    if (r.error) throw r.error;
+    if (!r.data || !r.data.length) throw new Error('No se pudo reactivar la venta.');
+    invalidarVentas(); S.vt.lista = null;
+    await cargarVentaDet(D.id);
+    setMsg('Venta reactivada.');
+  } catch (e) { setErr(errTxt(e)); }
+  S.busy = false; render();
+};
+A.vtCorregir = function(){
+  var D = S.vt.det;
+  S.vt.ed = {id:D.id, cli:D.cliente_id, forma:D.forma, serie:D.talonario_serie || 'N', numero:D.talonario_numero ? String(D.talonario_numero) : '', sin:!D.talonario_serie,
+    fecha:D.fecha, nota:D.nota || '', sa:!!D.es_saldo_anterior, monto:String(+D.total),
+    lineas:(D.venta_items || []).map(function(i){
+      var p = S.productos.filter(function(x){ return x.id === i.producto_id; })[0];
+      return {id:i.id, producto_id:i.producto_id, nombre:p ? p.nombre : '(producto)', pres:i.presentacion, kilos:String(+i.kilos), precio:String(+i.precio_kg)};
+    })};
+  S.err = ''; render();
+};
+A.vtCancelEd = function(){ S.vt.ed = null; S.err = ''; render(); };
+A.edF = function(k, v){ S.vt.ed[k] = v; };
+A.edForma = function(f){ S.vt.ed.forma = f; render(); };
+A.edSin = function(c){ S.vt.ed.sin = c; render(); };
+A.edSerie = function(k){ S.vt.ed.serie = k; render(); };
+A.edNum = function(el){ var v = String(el.value).replace(/\D/g, '').slice(0, 9); el.value = v; S.vt.ed.numero = v; };
+A.edL = function(i, k, v){ S.vt.ed.lineas[i][k] = v; var el = document.getElementById('ed-tot'); if (el) el.textContent = money(totalEd()); };
+A.edQuitar = function(i){ S.vt.ed.lineas.splice(i, 1); render(); };
+A.vtGuardar = async function(){
+  if (S.busy) return;
+  var E = S.vt.ed, D = S.vt.det;
+  if (!E.cli) { setErr('Elige un cliente.'); render(); return; }
+  S.busy = true; render();
+  try {
+    if (E.sa) {
+      var m = Math.round(num(E.monto) * 100) / 100;
+      if (!(m > 0)) throw new Error('Escribe el monto que debe el cliente.');
+      var r0 = await db.from('ventas').update({cliente_id:E.cli, total:m, nota:(E.nota || '').trim() || null}).eq('id', E.id).select('id');
+      if (r0.error) throw r0.error;
+      if (!r0.data || !r0.data.length) throw new Error('No se pudo guardar la corrección.');
+    } else {
+      var items = [];
+      for (var i = 0; i < E.lineas.length; i++) {
+        var l = E.lineas[i], k = num(l.kilos), p = num(l.precio);
+        if (!(k > 0)) throw new Error('Revisa los kilos de ' + l.nombre + ': deben ser mayores que cero.');
+        if (!(p >= 0)) throw new Error('Revisa el precio de ' + l.nombre + '.');
+        items.push({id:l.id, producto_id:l.producto_id, presentacion:l.pres || '', kilos:Math.round(k * 100) / 100, precio_kg:Math.round(p * 100) / 100});
+      }
+      if (!items.length) throw new Error('La venta debe tener al menos un producto.');
+      var nT = null;
+      if (!E.sin) {
+        var dg = String(E.numero).replace(/\D/g, '');
+        if (!dg || +dg < 1) throw new Error('Escribe el número del talonario o marca "Sin talonario".');
+        nT = +dg;
+      }
+      var r = await db.rpc('corregir_venta', {p_id:E.id, p_cliente_id:E.cli, p_forma:E.forma, p_talonario_serie:nT === null ? null : E.serie, p_talonario_numero:nT,
+        p_fecha:E.fecha || D.fecha, p_nota:(E.nota || '').trim() || null, p_items:items});
+      if (r.error) throw r.error;
+    }
+    S.vt.ed = null; invalidarVentas(); S.vt.lista = null;
+    await cargarVentaDet(E.id);
+    setMsg('Venta corregida.');
+  } catch (e) {
+    var msg = (e && e.message) || '';
+    setErr(/talonario/i.test(msg) && /duplicate|unique/i.test(msg + ' ' + ((e && e.details) || '')) ? 'Ese número de talonario ya está registrado en otra venta.' : errTxt(e));
+  }
+  S.busy = false; render();
+};
+
 /* ---------- Acciones: talonarios ---------- */
 A.talSin = function(c){ tal().sin = c; if (c) tal().numero = ''; render(); };
 A.talSerie = function(k){ var t = tal(); t.serie = k; t.numero = ''; render(); };
@@ -1675,11 +1898,13 @@ A.talBuscar = async function(){
   if (!dg) { T.res = ''; render(); return; }
   var n = +dg, tt = nomTal(k) + ' #' + k + n;
   try {
-    var r = await db.from('ventas').select('total,forma,fecha,creado_por,clientes(nombre)').eq('talonario_serie', k).eq('talonario_numero', n).maybeSingle();
+    var r = await db.from('ventas').select('id,anulada,anulada_motivo,total,forma,fecha,creado_por,clientes(nombre)').eq('talonario_serie', k).eq('talonario_numero', n).maybeSingle();
     if (r.error) throw r.error;
     if (r.data) {
       T.res = '<div class="m" style="margin:8px 0"><div style="font-weight:600">' + esc(tt) + '</div><div class="sub">' + esc(r.data.clientes ? r.data.clientes.nombre : '') + ' · ' + fdate(r.data.fecha) + ' · ' +
-        (r.data.forma === 'contado' ? 'Contado' : 'A crédito') + ' · ' + money(r.data.total) + ' · Registrado por ' + esc(nameOf(r.data.creado_por)) + '</div></div>';
+        (r.data.forma === 'contado' ? 'Contado' : 'A crédito') + ' · ' + money(r.data.total) + ' · Registrado por ' + esc(nameOf(r.data.creado_por)) + '</div>' +
+        (r.data.anulada ? '<div class="sub bad" style="margin-top:4px">Anulada: ' + esc(r.data.anulada_motivo || '') + '</div>' : '') +
+        '<button style="margin-top:8px" onclick="A.verVenta(\'' + r.data.id + '\')">Ver venta</button></div>';
     } else {
       var d = T.datos, dentro = d && d.n && n >= d.first && n <= d.last;
       T.res = '<div class="m" style="margin:8px 0"><div style="font-weight:600' + (dentro ? ';color:var(--warn)' : '') + '">' + esc(tt) + ': no está registrada</div><div class="sub">' +
@@ -1777,6 +2002,7 @@ A.mas = async function(x){
   if (x === 'usuarios') { try { await cargarPerfiles(); } catch (e) { setErr(errTxt(e)); } render(); }
   if (x === 'auditoria') { try { await cargarPerfiles(); } catch (e) {} cargarAud(); }
   if (x === 'talonarios') { try { await cargarPerfiles(); } catch (e) {} cargarTal(); }
+  if (x === 'ventas') { S.vt.det = null; S.vt.ed = null; S.vt.mot = null; S.vt.q = ''; if (!S.vt.fecha) S.vt.fecha = hoy(); cargarVentas(); }
 };
 A.audF = function(v){ S.aud.filtro = v; cargarAud(); };
 
